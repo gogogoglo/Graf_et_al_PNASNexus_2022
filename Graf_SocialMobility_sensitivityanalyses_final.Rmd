@@ -1,0 +1,834 @@
+---
+title: "SocialMobility_sensitivityanalyses_01182022"
+author: "Gloria Huei-Jong Graf"
+date: "1/18/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This document contains reviewer-requested sensitivity analyses for Graf/SocialMobility/PNAS manuscript as of 01/18/2022.
+
+
+```{r setup, include=FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(foreign)
+library(modelr)
+library(miceadds)
+library(haven)
+library(wesanderson)
+library(patchwork)
+library(lattice)
+library(gridExtra)
+library(corrplot)
+```
+
+## Loading data
+```{r echo=FALSE}
+# Main Dataset
+socialmobility_df = read.dta("./Data/HRS_SocialMobilityStata12_DWB200823.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn)
+    #n=37722
+
+# 2018 tracker file
+trackerfile_df = read_sas("./Data/trk2018tr_r.sas7bdat") %>%
+  janitor::clean_names() %>%
+  mutate(hhidpn = paste(hhid, pn, sep = "")) %>%
+  mutate(hhidpn = as.numeric(hhidpn)) %>%
+  select(hhidpn, hhid, page, vbsi16wgtra, pvbswgtr, hispanic) %>%
+  filter(page != "999") %>%
+  arrange(hhidpn)
+  #n=20911
+
+# Vable childhood SES variables
+vable_df = read_sas("./Data/cses_measures.sas7bdat") %>%
+  janitor::clean_names() %>%
+  mutate(hhidpn = paste(hhid, pn, sep = "")) %>%
+  mutate(hhidpn = as.numeric(hhidpn)) %>%
+  select(hhidpn, fincap, soccap, humcap, cses_index) %>%
+  mutate(cses_index_pct = ((rank(cses_index)/length(cses_index))*100))
+
+# Biological Age Datasets
+## Phenoage
+phenoage_df = read.dta("./Data/PhenoAge_Revised032320DK_v12.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn) %>%
+    select(hhidpn, pheno_age, paa) %>%
+    filter(!is.na(pheno_age)) %>%
+    rename(levinephenoage = pheno_age,
+           levinephenoage_advance = paa)
+  #n=9356
+## KDM and HD
+bioage_df =
+  read_csv("./Data/new_bioage_df.csv") %>%
+  rename(hhidpn = sampleID,
+         ) %>%
+  dplyr::filter(!is.na(hd))
+  #n=9472
+
+## Methylation clocks
+methylclock_df = read.dta("./Data/EPICLOCKA_R.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn) %>%
+    dplyr::select(hhidpn, levine_dnamage, hannum_dnamage, horvath_dnamage, dnamgrimage, mpoa) %>%
+    rename(levinednam = levine_dnamage,
+           hannum = hannum_dnamage, 
+           horvath = horvath_dnamage, 
+           grimage = dnamgrimage,
+           poa = mpoa) %>%
+    dplyr::mutate(hhidpn = as.integer(hhidpn))
+#n=4018
+```
+
+Data for adult wealth: 
+
+1) We use data from all waves at which the respondent indicated that they were not retired (RwRETEMP = 0). We then then inflate to constant dollars, and calculate their max/min income and earnings during this time (RwIWAGE, RwIEARN). We repeat the process for the respondent's spouse (SwIWAGE, SwIEARN). We then set the respondents value to the higher of their/their spouse's income and earnings based on the higher-earning spouse.
+
+```{r warning=FALSE, echo=FALSE}
+#Loading datasets
+RAND_df = read.dta("./Data/randhrs1992_2018v1.dta") %>%
+  janitor::clean_names() %>%
+  mutate(hhidpn = paste(hhid, pn, sep = "")) %>%
+  mutate(hhidpn = as.numeric(hhidpn)) %>%
+  arrange(hhidpn)
+
+RANDimpute_df = read_sas("./Data/randhrsimp1992_2018v1.sas7bdat") %>%
+  janitor::clean_names() %>%
+  mutate(hhidpn = paste(hhid, pn, sep = "")) %>%
+  mutate(hhidpn = as.numeric(hhidpn)) %>%
+  arrange(hhidpn)
+
+#Restricting variables
+earnings_df =
+  RAND_df %>%
+  select(hhidpn,
+         #respondent retirement status
+         r1retemp, r2retemp, r3retemp, r4retemp, r5retemp, r6retemp, r7retemp, r8retemp, r9retemp, r10retemp, r11retemp, r12retemp, r13retemp, r14retemp,
+         #spouse retirement status
+         s1retemp, s2retemp, s3retemp, s4retemp, s5retemp, s6retemp, s7retemp, s8retemp, s9retemp, s10retemp, s11retemp, s12retemp, s13retemp, s14retemp,
+         #respondent earnings
+         r1iearn, r2iearn, r3iearn, r4iearn, r5iearn, r6iearn, r7iearn, r8iearn, r9iearn, r10iearn, r11iearn, r12iearn, r13iearn, r14iearn,
+         #spousal earnings
+         s1iearn, s2iearn, s3iearn, s4iearn, s5iearn, s6iearn, s7iearn, s8iearn, s9iearn, s10iearn, s11iearn, s12iearn, s13iearn, s14iearn) %>%
+  mutate_at(vars(r1iearn:r14iearn), .funs = funs(. / 1000)) %>%
+  mutate_at(vars(s1iearn:s14iearn), .funs = funs(. / 1000))
+
+wages_df =
+  RANDimpute_df %>%
+  select(hhidpn,
+        #respondent wages
+         r1iwage, r2iwage, r3iwage, r4iwage, r5iwage, r6iwage, r7iwage, r8iwage, r9iwage, r10iwage, r11iwage, r12iwage, r13iwage, r14iwage,
+         #spousal wages
+         s1iwage, s2iwage, s3iwage, s4iwage, s5iwage, s6iwage, s7iwage, s8iwage, s9iwage, s10iwage, s11iwage, s12iwage, s13iwage, s14iwage) %>%
+  mutate_at(vars(r1iwage:r14iwage), .funs = funs(. / 1000)) %>%
+  mutate_at(vars(s1iwage:s14iwage), .funs = funs(. / 1000))
+    
+#Merge wages and earnings data, create non-retirement income variable
+attainments_df =
+  left_join(wages_df, earnings_df) %>%
+  filter(r1retemp == "0.no retire empstat" | r2retemp == "0.no retire empstat" | r3retemp == "0.no retire empstat" | r4retemp == "0.no retire empstat" | r5retemp == "0.no retire empstat" | r6retemp == "0.no retire empstat" | r7retemp == "0.no retire empstat" | r8retemp == "0.no retire empstat" | r9retemp == "0.no retire empstat" | r10retemp == "0.no retire empstat" | r11retemp == "0.no retire empstat" | r12retemp == "0.no retire empstat" | r13retemp == "0.no retire empstat" | r14retemp == "0.no retire empstat")
+
+#Write function
+nonret_var = function(ownret, ownvar, spouseret, spousevar) {
+    
+  own_attainment_nonret = ifelse(pull(attainments_df, ownret) == "0.no retire empstat", pull(attainments_df, ownvar), NA)
+  spouse_attainment_nonret = ifelse(pull(attainments_df, spouseret) == "0.no retire empstat", pull(attainments_df, spousevar), NA)
+  hhidpn = attainments_df$hhidpn
+  
+  tibble(own_attainment_nonret = own_attainment_nonret,
+         spouse_attainment_nonret = spouse_attainment_nonret,
+         wave = paste(ownvar),
+         hhidpn = hhidpn)
+  
+  }
+
+### Analysis combinations
+sample = list(attainments_df)
+
+ownret = c("r1retemp", "r2retemp", "r3retemp", "r4retemp", "r5retemp", "r6retemp", "r7retemp", "r8retemp", "r9retemp", "r10retemp", "r11retemp", "r12retemp", "r13retemp", "r14retemp")
+
+spouseret = c("s1retemp", "s2retemp", "s3retemp", "s4retemp", "s5retemp", "s6retemp", "s7retemp", "s8retemp", "s9retemp", "s10retemp", "s11retemp", "s12retemp", "s13retemp", "s14retemp")
+
+ownearn = c("r1iearn", "r2iearn", "r3iearn", "r4iearn", "r5iearn", "r6iearn", "r7iearn", "r8iearn", "r9iearn", "r10iearn", "r11iearn", "r12iearn", "r13iearn", "r14iearn")
+
+spouseearn = c("s1iearn", "s2iearn", "s3iearn", "s4iearn", "s5iearn", "s6iearn", "s7iearn", "s8iearn", "s9iearn", "s10iearn", "s11iearn", "s12iearn", "s13iearn", "s14iearn")
+
+ownwage = c("r1iwage", "r2iwage", "r3iwage", "r4iwage", "r5iwage", "r6iwage", "r7iwage", "r8iwage", "r9iwage", "r10iwage", "r11iwage", "r12iwage", "r13iwage", "r14iwage")
+
+spousewage = c("s1iwage", "s2iwage", "s3iwage", "s4iwage", "s5iwage", "s6iwage", "s7iwage", "s8iwage", "s9iwage", "s10iwage", "s11iwage", "s12iwage", "s13iwage", "s14iwage")
+
+
+# Pre-retirement earnings calculations
+earnings_preret = 
+  data.frame(ownret, ownearn, spouseret, spouseearn)
+
+earnings_preret_df =
+  pmap_dfr(list(earnings_preret$ownret, earnings_preret$ownearn, earnings_preret$spouseret, earnings_preret$spouseearn), nonret_var) %>%
+  mutate(wave = str_replace(wave, "iearn", "")) %>%
+  mutate(wave = str_replace(wave, "r", "")) %>%
+  rename(rearn_nonret_raw = own_attainment_nonret,
+         searn_nonret_raw = spouse_attainment_nonret) %>%
+  mutate(cpi_index = case_when(wave == 1 ~ 210.2,
+                               wave == 2 ~ 220.0,
+                               wave == 3 ~ 231.3,
+                               wave == 4 ~ 239.5,
+                               wave == 5 ~ 252.9,
+                               wave == 6 ~ 264.2,
+                               wave == 7 ~ 277.5,
+                               wave == 8 ~ 296.2,
+                               wave == 9 ~ 316.3,
+                               wave == 10 ~ 320.4,
+                               wave == 11 ~ 337.5,
+                               wave == 12 ~ 348.3,
+                               wave == 13 ~ 353.4,
+                               wave == 14 ~ 369.8,
+                               )) %>%
+  mutate(rearn_nonret_adj = rearn_nonret_raw*(cpi_index/337.5),
+          searn_nonret_adj = searn_nonret_raw*(cpi_index/337.5)) %>%
+  pivot_wider(names_from = wave, values_from = c(cpi_index, rearn_nonret_raw, searn_nonret_raw, rearn_nonret_adj, searn_nonret_adj))
+
+    # Mean and max calculations (NOT YET FINAL- 7408 with 0 income? out of 34309?)
+    earnings_preret_df =
+      earnings_preret_df %>%
+      mutate(ownearn_mean = rowMeans(select(., starts_with("rearn_nonret_")), na.rm = TRUE),
+             spouseearn_mean = rowMeans(select(., starts_with("searn_nonret_")), na.rm = TRUE)
+             ) %>%
+      mutate(ownearn_mean = ifelse(is.nan(ownearn_mean), NA, ownearn_mean),
+             spouseearn_mean = ifelse(is.nan(spouseearn_mean), NA, spouseearn_mean)
+             ) %>%
+      rowwise %>%
+      mutate(ownearn_max = max(c_across(rearn_nonret_adj_1:rearn_nonret_adj_14), na.rm = TRUE),
+             spouseearn_max = max(c_across(searn_nonret_adj_1:searn_nonret_adj_14), na.rm = TRUE)
+             ) %>%
+      ungroup() %>%
+      mutate(ownearn_max = ifelse(is.infinite(ownearn_max), NA, ownearn_max),
+             spouseearn_max = ifelse(is.infinite(spouseearn_max), NA, spouseearn_max)
+             ) %>%
+      rowwise() %>%
+      mutate(maxHH_meanearn = max(c_across(ownearn_mean:spouseearn_mean), na.rm = T),
+             maxHH_maxearn = max(c_across(ownearn_max:spouseearn_max), na.rm = T)
+               ) %>%
+      ungroup() %>%
+      mutate(maxHH_meanearn = ifelse(is.infinite(maxHH_meanearn), NA, maxHH_meanearn),
+             maxHH_maxearn = ifelse(is.infinite(maxHH_maxearn), NA, maxHH_maxearn)
+             ) %>%
+      filter(!is.na(maxHH_meanearn)) %>%
+      mutate(pct_maxHH_meanearn = ((rank(maxHH_meanearn)/length(maxHH_meanearn))*100),
+             z_maxHH_meanearn = scale(maxHH_meanearn),
+             pct_maxHH_maxearn = ((rank(maxHH_maxearn)/length(maxHH_maxearn))*100),
+             z_maxHH_maxearn = scale(maxHH_maxearn)
+             ) %>%
+      filter(maxHH_meanearn != 0)
+    
+
+# Pre-retirement wage calculations
+wages_preret = 
+  data.frame(ownret, ownwage, spouseret, spousewage)
+
+wages_preret_df =
+  pmap_dfr(list(wages_preret$ownret, wages_preret$ownwage, wages_preret$spouseret, wages_preret$spousewage), nonret_var) %>%
+  mutate(wave = str_replace(wave, "iwage", "")) %>%
+  mutate(wave = str_replace(wave, "r", "")) %>%
+  rename(rwage_nonret_raw = own_attainment_nonret,
+         swage_nonret_raw = spouse_attainment_nonret) %>%
+  mutate(cpi_index = case_when(wave == 1 ~ 210.2,
+                               wave == 2 ~ 220.0,
+                               wave == 3 ~ 231.3,
+                               wave == 4 ~ 239.5,
+                               wave == 5 ~ 252.9,
+                               wave == 6 ~ 264.2,
+                               wave == 7 ~ 277.5,
+                               wave == 8 ~ 296.2,
+                               wave == 9 ~ 316.3,
+                               wave == 10 ~ 320.4,
+                               wave == 11 ~ 337.5,
+                               wave == 12 ~ 348.3,
+                               wave == 13 ~ 353.4,
+                               wave == 14 ~ 369.8,
+                               )) %>%
+  mutate(rwage_nonret_adj = rwage_nonret_raw*(cpi_index/337.5),
+          swage_nonret_adj = swage_nonret_raw*(cpi_index/337.5)) %>%
+  pivot_wider(names_from = wave, values_from = c(cpi_index, rwage_nonret_raw, swage_nonret_raw, rwage_nonret_adj, swage_nonret_adj))
+
+    # Mean and max calculations (NOT YET FINAL)
+    wages_preret_df =
+      wages_preret_df %>%
+      mutate(ownwage_mean = rowMeans(select(., starts_with("rwage_nonret_")), na.rm = TRUE),
+             spousewage_mean = rowMeans(select(., starts_with("swage_nonret_")), na.rm = TRUE)) %>%
+      mutate(ownwage_mean = ifelse(is.nan(ownwage_mean), NA, ownwage_mean),
+             spousewage_mean = ifelse(is.nan(spousewage_mean), NA, spousewage_mean)) %>%
+      rowwise() %>%
+      mutate(ownwage_max = max(c_across(rwage_nonret_adj_1:rwage_nonret_adj_14), na.rm = TRUE),
+             spousewage_max = max(c_across(swage_nonret_adj_1:swage_nonret_adj_14), na.rm = TRUE)
+             ) %>%
+      ungroup() %>%
+      mutate(ownwage_max = ifelse(is.infinite(ownwage_max), NA, ownwage_max),
+             spousewage_max = ifelse(is.infinite(spousewage_max), NA, spousewage_max)
+             ) %>%
+      rowwise() %>%
+      mutate(maxHH_meanwage = max(c_across(ownwage_mean:spousewage_mean), na.rm = T),
+             maxHH_maxwage = max(c_across(ownwage_max:spousewage_max), na.rm = T)
+               ) %>%
+      ungroup() %>%
+      mutate(maxHH_meanwage = ifelse(is.infinite(maxHH_meanwage), NA, maxHH_meanwage),
+             maxHH_maxwage = ifelse(is.infinite(maxHH_maxwage), NA, maxHH_maxwage)
+             ) %>%
+      filter(!is.na(maxHH_meanwage)) %>%
+      mutate(pct_maxHH_meanwage = ((rank(maxHH_meanwage)/length(maxHH_meanwage))*100),
+             z_maxHH_meanwage = scale(maxHH_meanwage),
+             pct_maxHH_maxwage = ((rank(maxHH_maxwage)/length(maxHH_maxwage))*100),
+             z_maxHH_maxwage = scale(maxHH_maxwage)
+             ) %>%
+      filter(maxHH_meanwage != 0)
+    
+```
+
+``` {r}
+# Merge datasets
+main_df = left_join(socialmobility_df, trackerfile_df, by = "hhidpn")
+main_df = left_join(main_df, vable_df, by = "hhidpn")
+main_df = left_join(main_df, phenoage_df, by = "hhidpn")
+main_df = left_join(main_df, bioage_df, by = "hhidpn")
+main_df = left_join(main_df, methylclock_df, by = "hhidpn")
+main_df = left_join(main_df, earnings_preret_df, by = "hhidpn")
+main_df = left_join(main_df, wages_preret_df, by = "hhidpn")
+main_df =
+  main_df %>%
+  filter(!is.na(page)) %>%
+  rename(age = page)
+
+# Generate methylation clock advancement measures
+levinednam_advance_reg =
+  lm(levinednam ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(levinednam_advance_reg, var = "levinednam_pred") %>%
+  dplyr::mutate(levinednam_advance = levinednam - levinednam_pred)
+
+hannum_advance_reg =
+  lm(hannum ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(hannum_advance_reg, var = "hannum_pred") %>%
+  dplyr::mutate(hannum_advance = hannum - hannum_pred)
+
+horvath_advance_reg =
+  lm(horvath ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(horvath_advance_reg, var = "horvath_pred") %>%
+  dplyr::mutate(horvath_advance = horvath - horvath_pred)
+
+grimage_advance_reg =
+  lm(grimage ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(grimage_advance_reg, var = "grimage_pred") %>%
+  dplyr::mutate(grimage_advance = grimage - grimage_pred)
+
+# Standardize biological and methylation aging clock advancement variables
+main_df =
+  main_df %>%
+  dplyr::mutate(
+         levinephenoageadv_sd = (levinephenoage_advance - mean(main_df$levinephenoage_advance, na.rm = T))/sd(main_df$levinephenoage_advance, na.rm = T),
+         kdma_sd = (kdm_advance - mean(main_df$kdm_advance, na.rm = T))/sd(main_df$kdm_advance, na.rm = T),
+         hdlog_sd = (hd_log - mean(main_df$hd_log, na.rm = T))/sd(main_df$hd_log, na.rm = T),
+         levinednamadv_sd = (levinednam_advance - mean(main_df$levinednam_advance, na.rm = T))/sd(main_df$levinednam_advance, na.rm = T),
+         hannumadv_sd = (hannum_advance - mean(main_df$hannum_advance, na.rm = T))/sd(main_df$hannum_advance, na.rm = T),
+         horvathadv_sd = (horvath_advance - mean(main_df$horvath_advance, na.rm = T))/sd(main_df$horvath_advance, na.rm = T),
+         grimageadv_sd = (grimage_advance - mean(main_df$grimage_advance, na.rm = T))/sd(main_df$grimage_advance, na.rm = T),
+         poa_sd = (poa - mean(main_df$poa, na.rm = T))/sd(main_df$poa, na.rm = T)
+         )
+
+# Create mobility variables - delta
+  # Original variable: pctso_bc (origins), pctwlth13 (attainments), dpct13_bc (mobility)
+  # New variables: cses_index_pct (origins), pct_maxHH_meanwage (attainments)
+  # Mobility variables: dpct13_bc (original), deltamobility_cses_wlth, deltamobility_so_meanwage, deltamobility_cses_meanwage
+
+main_df = 
+  main_df %>%
+  mutate(deltamobility_cses_wlth = pctwlth13 - cses_index_pct,
+         deltamobility_so_meanwage = pct_maxHH_meanwage - pctso_bc,
+         deltamobility_cses_meanwage = pct_maxHH_meanwage - cses_index_pct
+         )
+
+# Create mobility variables - residualized-change
+  # Original variable: pctso_bc (origins), pctwlth13 (attainments), dpct13_bc (mobility)
+  # New variables: cses_index_pct (origins), pct_maxHH_meanwage (attainments)
+  # Mobility variables: rpct13_bc (original), deltamobility_cses_wlth, deltamobility_so_meanwage, deltamobility_cses_meanwage
+
+rcmobility_original_reg =
+  lm(pctwlth13 ~ pctso_bc, data = main_df)
+  
+rcmobility_cses_wlth_reg =
+  lm(pctwlth13 ~ cses_index_pct, data = main_df)
+
+rcmobility_so_meanwage_reg = 
+  lm(pct_maxHH_meanwage ~ pctso_bc, data = main_df)
+
+rcmobility_cses_meanwage_reg = 
+  lm(pct_maxHH_meanwage ~ cses_index_pct, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(rcmobility_original_reg, var = "rcmobility_original_reg_pred") %>%
+  add_predictions(rcmobility_cses_wlth_reg, var = "rcmobility_cses_wlth_reg_pred") %>%
+  add_predictions(rcmobility_so_meanwage_reg, var = "rcmobility_so_meanwage_reg_pred") %>%
+  add_predictions(rcmobility_cses_meanwage_reg, var = "rcmobility_cses_meanwage_reg_pred") %>%
+  dplyr::mutate(
+    rcmobility_original = pctwlth13 - rcmobility_original_reg_pred,
+    rcmobility_cses_wlth = pctwlth13 - rcmobility_cses_wlth_reg_pred,
+    rcmobility_so_meanwage = pct_maxHH_meanwage - rcmobility_so_meanwage_reg_pred,
+    rcmobility_cses_meanwage = pct_maxHH_meanwage - rcmobility_cses_meanwage_reg_pred
+    )
+
+
+#Summary
+summary(main_df$pctso_bc)
+summary(main_df$pctwlth13)
+summary(main_df$cses_index_pct)
+summary(main_df$pct_maxHH_meanwage)
+
+summary(main_df$dpct13_bc)
+summary(main_df$deltamobility_cses_wlth)
+summary(main_df$deltamobility_so_meanwage)
+summary(main_df$deltamobility_cses_meanwage)
+
+summary(main_df$rpct13_bc)
+summary(main_df$rcmobility_cses_wlth)
+summary(main_df$rcmobility_so_meanwage)
+summary(main_df$rcmobility_cses_meanwage)
+
+# Cleaning dataset
+main_df =
+  main_df %>%
+  dplyr::select(
+    hhid, hhidpn:racohbyr, hispanic, rafeduc, rameduc, age, zwlth13, pctwlth13, z_maxHH_maxearn, zso_bc, pctso_bc, pct_maxHH_meanwage, pct_maxHH_meanearn, pct_maxHH_maxwage, z_maxHH_meanwage, pct_maxHH_maxearn, z_maxHH_meanearn, fameduc, cses_index_pct, dpct13_bc, deltamobility_cses_wlth, deltamobility_so_meanwage, deltamobility_cses_meanwage, rpct13_bc, rcmobility_original, rcmobility_cses_wlth, rcmobility_so_meanwage, rcmobility_cses_meanwage, levinephenoage:poa_sd) %>%
+  mutate(
+    educ = ifelse(raeduc == "1.lt high-school" | raeduc == "2.ged", "<HS",
+            ifelse(raeduc == "3.high-school graduate" | raeduc == "4.some college", "HS",
+            ifelse(raeduc == "5.college and above", "BA+",
+            ifelse(is.na(raeduc), NA, 666)))),
+    paryrseduc = ifelse(is.na(rameduc) | ((rafeduc >= rameduc) & !is.na(rafeduc)) , rafeduc, rameduc)
+  ) %>%
+  mutate(educ = factor(educ, levels = c("<HS", "HS", "BA+")),
+         pareduc = ifelse(paryrseduc < 12, "<HS",
+                    ifelse(paryrseduc >= 12 & paryrseduc <= 15, "HS",
+                    ifelse(paryrseduc >= 16, "BA+", 666))),
+         agesquared = age^2,
+         hispanic = ifelse(hispanic == "5", 0, 1),
+         pctso_bc = pctso_bc/25,
+         cses_index_pct = cses_index_pct/25,
+         pctwlth13 = pctwlth13/25,
+         pct_maxHH_meanwage = pct_maxHH_meanwage/25,
+         pct_maxHH_meanearn = pct_maxHH_meanearn/25,
+         pct_maxHH_maxearn = pct_maxHH_maxearn/25,
+         dpct13_bc = dpct13_bc/25,
+         deltamobility_cses_wlth = deltamobility_cses_wlth/25,
+         deltamobility_so_meanwage = deltamobility_so_meanwage/25,
+         deltamobility_cses_meanwage = deltamobility_cses_meanwage/25,
+         rpct13_bc = rpct13_bc/25,
+         rcmobility_original = rcmobility_original/25,
+         rcmobility_cses_wlth = rcmobility_cses_wlth/25,
+         rcmobility_so_meanwage = rcmobility_so_meanwage/25,
+         rcmobility_cses_meanwage = rcmobility_cses_meanwage/25,
+         ) %>%
+  mutate(pareduc = factor(pareduc, levels = c("<HS", "HS", "BA+")),
+         educ_num = ifelse(educ == "<HS", 1,
+                      ifelse(educ == "HS", 2,
+                      ifelse(educ == "BA+", 3,
+                      ifelse(is.na(educ), NA, 666)))),
+         pareduc_num = ifelse(pareduc == "<HS", 1,
+                      ifelse(pareduc == "HS", 2,
+                      ifelse(pareduc == "BA+", 3,
+                      ifelse(is.na(pareduc), NA, 666)))),
+         fameduc_num = ifelse(fameduc == "Low", 1,
+                      ifelse(fameduc == "Middle", 2,
+                      ifelse(fameduc == "High", 3,
+                      ifelse(is.na(fameduc), NA, 666))))
+         ) %>%
+  mutate(edmob_yrs = educ_num - pareduc_num,
+         edmob_index = educ_num - fameduc_num
+         )
+#n=20607
+```
+
+## Analysis samples
+```{r echo=FALSE}
+# Full sample (n=20683)
+full_sample = 
+  main_df
+#n=20683
+
+full_sample_NH = 
+  full_sample %>%
+  filter(hispanic == 0)
+#n=17267
+
+# Biomarker sample
+BA_subsample =
+  main_df %>%
+  filter(!is.na(levinephenoage) & !is.na(kdm) & !is.na(hd_log))
+#9255
+
+BA_subsample_NH = 
+  BA_subsample %>%
+  filter(hispanic == 0)
+#7898
+
+# DNAm sample
+DNAm_subsample =
+  main_df %>%
+  filter(!is.na(horvath) | !is.na(hannum) | !is.na(levinednam) | !is.na(grimage) | !is.na(poa))
+#n=3976
+
+DNAm_subsample_NH = 
+  DNAm_subsample %>%
+  filter(hispanic == 0)
+#n=3426
+
+# Education subsamples 
+BA_subsample_ED =
+  BA_subsample %>%
+  filter(!is.na(edmob_yrs))
+#n=8759
+
+DNAm_subsample_ED =
+  DNAm_subsample %>%
+  filter(!is.na(edmob_yrs))
+#n=3774
+
+## For interaction term analysis- datasets restricted to Black and white participants
+BA_subsample_bw =
+  BA_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american"))
+#n=8451
+
+BA_subsample_bw_ED =
+  BA_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american")) %>%
+  filter(!is.na(edmob_yrs))
+#n=8451
+
+DNAm_subsample_bw =
+  DNAm_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american"))
+#n=3661
+
+DNAm_subsample_bw_ED =
+  DNAm_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american")) %>%
+  filter(!is.na(edmob_yrs))
+#n=3661
+
+## For analysis of middle 50% of social origins distribution (zso_bc)
+summary(pull(BA_subsample, zso_bc))
+
+BA_subsample_middle = 
+  BA_subsample %>%
+  filter(zso_bc > -0.6751444 & zso_bc < 0.6251319)
+#n=4619
+
+summary(pull(DNAm_subsample, zso_bc))
+
+DNAm_subsample_middle = 
+  DNAm_subsample %>%
+  filter(zso_bc > -0.62451 & zso_bc < 0.67453)
+#n=1971
+```
+
+
+## Social origins distributions for each sample, by race and sex
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, full sample") +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = cses_index_pct, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = cses_index_pct, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = cses_index_pct, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, full sample") +
+  xlab("Social Origins (Vable)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = cses_index_pct, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = cses_index_pct, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = cses_index_pct, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Origins (Vable)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = cses_index_pct, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = cses_index_pct, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = cses_index_pct, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Origins (Vable)") +
+  ylab(NULL)
+```
+
+
+# New mobility analyses
+
+Input lists
+```{r echo=FALSE, results=FALSE}
+# Creating input lists: samples (2: biomarker and DNAm), 4 measures of social mobility
+
+## Sample
+coremodel_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+         
+# Outcome measures
+sens_mobilitymeasures = list(pctso_bc = "pctso_bc", cses_index_pct = "cses_index_pct", pctwlth13 = "pctwlth13", pct_maxHH_meanwage = "pct_maxHH_meanwage", dpct13_bc = "dpct13_bc", deltamobility_cses_wlth = "deltamobility_cses_wlth", deltamobility_so_meanwage = "deltamobility_so_meanwage", deltamobility_cses_meanwage = "deltamobility_cses_meanwage", rpct13_bc = "rpct13_bc", rcmobility_original = "rcmobility_original", rcmobility_cses_wlth = "rcmobility_cses_wlth", rcmobility_so_meanwage = "rcmobility_so_meanwage", rcmobility_cses_meanwage = "rcmobility_cses_meanwage")
+
+```
+
+Analysis combinations
+```{r echo=FALSE}
+### SES combination
+model1_combo_list_sens = 
+  list(SESmeasure = sens_mobilitymeasures, df = coremodel_samples)
+dataset_model1_combo_sens = 
+  cross_df(model1_combo_list_sens)
+```
+
+```{r}
+# Create mobility variables
+  # Original variable: pctso_bc (origins), pctwlth13 (attainments), dpct13_bc (mobility)
+  # New variables: cses_index_pct (origins), pct_maxHH_meanwage (attainments)
+  # Mobility variables: dpct13_bc (original), deltamobility_cses_wlth, deltamobility_so_meanwage, deltamobility_cses_meanwage
+
+mobilitymodel_f =
+  function(SESmeasure, df) {
+
+  lm.cluster(levinephenoageadv_sd ~
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = df, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+         p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure)") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+          p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+nobs_mobilitymodel_f =
+  function(SESmeasure, df) {
+
+  model = lm(levinephenoageadv_sd ~
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = df) 
+  
+  nobs(model) %>%
+    as.data.frame()
+
+  }
+
+```
+
+Sensitivity analysis: Mobility measures
+```{r echo=FALSE, include=FALSE}
+### Applying function
+mobilitymodel_estimates = 
+  pmap_dfr(list(dataset_model1_combo_sens$SESmeasure, dataset_model1_combo_sens$df), mobilitymodel_f) %>%
+  mutate(
+    SES_measure = rep(c("pctso_bc", "cses_index_pct", "pctwlth13", "pct_maxHH_meanwage", "dpct13_bc", "deltamobility_cses_wlth", "deltamobility_so_meanwage", "deltamobility_cses_meanwage", "rpct13_bc", "rcmobility_original", "rcmobility_cses_wlth", "rcmobility_so_meanwage", "rcmobility_cses_meanwage"), 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 13)
+    ) %>%
+  select(SES_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, 
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample
+         )
+
+###nobs
+mobilitymodel_estimates_nobs =
+  pmap_dfr(list(dataset_model1_combo_sens$SESmeasure, dataset_model1_combo_sens$df), nobs_mobilitymodel_f) %>%
+  mutate(
+    SES_measure = rep(c("pctso_bc", "cses_index_pct", "pctwlth13", "pct_maxHH_meanwage", "dpct13_bc", "deltamobility_cses_wlth", "deltamobility_so_meanwage", "deltamobility_cses_meanwage", "rpct13_bc", "rcmobility_original", "rcmobility_cses_wlth", "rcmobility_so_meanwage", "rcmobility_cses_meanwage"), 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 13)
+    ) %>%
+  rename(n = names(.)[1]) %>%
+  pivot_wider(names_from = data, values_from = n)
+
+
+```
+
+```{r echo=FALSE}
+mobilitymodel_estimates %>%
+  knitr::kable()
+
+mobilitymodel_estimates_nobs %>%
+  knitr::kable()
+
+mobilitycor_BA =
+  BA_subsample %>%
+  select(dpct13_bc, deltamobility_cses_wlth, deltamobility_so_meanwage, deltamobility_cses_meanwage, rpct13_bc, rcmobility_original, rcmobility_cses_wlth, rcmobility_so_meanwage, rcmobility_cses_meanwage)
+
+corrplot(corr=cor(mobilitycor_BA, use="complete.obs"), method="color", 
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE
+         )
+
+```
+
+
+## Supplemental analysis: effect of social origins controlling for attainment
+
+Input lists
+```{r echo=FALSE, results=FALSE}
+## Sample
+suppmodel_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+
+## BA measures
+suppmodel_BAmeasures = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", horvathadv_sd = "horvathadv_sd", hannumadv_sd = "hannumadv_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+
+# Outcome measures
+suppmodel_originmeasures = list(pctso_bc = "pctso_bc", cses_index_pct = "cses_index_pct")
+suppmodel_attainmentmeasures = list(pctwlth13 = "pctwlth13", pct_maxHH_meanwage = "pct_maxHH_meanwage")
+
+```
+
+Analysis combinations
+```{r echo=FALSE}
+
+### SES combination
+suppmodel_combo_list = 
+  list(BAmeasure = suppmodel_BAmeasures, originsmeasure = suppmodel_originmeasures, attainmentsmeasure = suppmodel_attainmentmeasures, df = coremodel_samples)
+dataset_suppmodel_combo_list = 
+  cross_df(suppmodel_combo_list)
+
+```
+
+Function writing
+```{r echo=FALSE, results=FALSE}
+# # function foundation example
+# test =
+#   lm.cluster(levinephenoageadv_sd ~ pctso_bc + age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = DNAm_subsample, cluster = "hhid") %>%
+#   summary() %>%
+#   as.data.frame() %>%
+#   tibble::rownames_to_column(var = "term") %>%
+#   janitor::clean_names() %>%
+#   rename(std.error = std_error,
+#          p.value = pr_t) %>%
+#   filter(term == "pctso_bc") %>%
+#   mutate(lowerCI = round(estimate - 1.96*std.error, 2),
+#          upperCI = round(estimate + 1.96*std.error, 2)
+#          ) %>%
+#   mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = "")) %>%
+#   select(term, estimate, CI, p.value)
+
+### Function
+suppmodel_f =
+  function(BAmeasure, originsmeasure, attainmentsmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+       pull(df, originsmeasure) + 
+       age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender + pull(df, attainmentsmeasure), data = df, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+         p.value = pr_t) %>%
+  filter(term == "pull(df, originsmeasure)") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+          p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# use cases
+# suppmodel_f(BAmeasure = "grimageadv_sd", "pctso_bc", "pctwlth13", df = DNAm_subsample)
+# suppmodel_f(BAmeasure = "levinephenoageadv_sd", "cses_index_pct", "pct_maxHH_meanwage", df = BA_subsample)
+
+```
+
+Table 2- SES measures
+```{r echo=FALSE, include=FALSE}
+
+dataset_suppmodel_combo_list
+
+
+
+### Applying function
+suppmodel_SES_estimates = 
+  pmap_dfr(list(dataset_suppmodel_combo_list$BAmeasure, dataset_suppmodel_combo_list$originsmeasure, dataset_suppmodel_combo_list$attainmentsmeasure, dataset_suppmodel_combo_list$df), suppmodel_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 8),
+    originsmeasure = rep(c("pctso_bc", "cses_index_pct"), each = 8, 4),
+    attainmentsmeasure = rep(c("pctwlth13", "pct_maxHH_meanwage"), each = 16, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 32)
+    ) %>%
+  select(bioage_measure, originsmeasure, attainmentsmeasure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(bioage_measure, originsmeasure, attainmentsmeasure, 
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         )
+```
+
+```{r echo=FALSE}
+suppmodel_SES_estimates %>%
+  knitr::kable()
+```
+
+
+

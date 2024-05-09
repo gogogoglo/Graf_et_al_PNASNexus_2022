@@ -1,0 +1,3467 @@
+---
+title: "SocialMobility_analyses_01032022"
+author: "Gloria Huei-Jong Graf"
+date: "01/03/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This document contains all analyses included the Social Mobility paper by Zhang/Hu/Belsky as of 01/03/2022.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(foreign)
+library(modelr)
+library(miceadds)
+library(haven)
+library(wesanderson)
+library(patchwork)
+library(lattice)
+library(gridExtra)
+```
+
+## Loading data
+```{r echo=FALSE}
+# Main Dataset
+socialmobility_df = read.dta("./Data/HRS_SocialMobilityStata12_DWB200823.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn)
+    #n=37722
+
+# 2018 tracker file
+trackerfile_df = read_sas("./Data/trk2018tr_r.sas7bdat") %>%
+  janitor::clean_names() %>%
+  mutate(hhidpn = paste(hhid, pn, sep = "")) %>%
+  mutate(hhidpn = as.numeric(hhidpn)) %>%
+  select(hhidpn, hhid, page, vbsi16wgtra, pvbswgtr, hispanic) %>%
+  filter(page != "999") %>%
+  arrange(hhidpn)
+  #n=20911
+
+# Biological Age Datasets
+## Phenoage
+phenoage_df = read.dta("./Data/PhenoAge_Revised032320DK_v12.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn) %>%
+    select(hhidpn, pheno_age, paa) %>%
+    filter(!is.na(pheno_age)) %>%
+    rename(levinephenoage = pheno_age,
+           levinephenoage_advance = paa)
+  #n=9356
+## KDM and HD
+bioage_df =
+  read_csv("./Data/new_bioage_df.csv") %>%
+  rename(hhidpn = sampleID,
+         ) %>%
+  dplyr::filter(!is.na(hd))
+  #n=9472
+
+## Methylation clocks
+methylclock_df = read.dta("./Data/EPICLOCKA_R.dta") %>%
+    janitor::clean_names() %>%
+    arrange(hhidpn) %>%
+    dplyr::select(hhidpn, levine_dnamage, hannum_dnamage, horvath_dnamage, dnamgrimage, mpoa) %>%
+    rename(levinednam = levine_dnamage,
+           hannum = hannum_dnamage, 
+           horvath = horvath_dnamage, 
+           grimage = dnamgrimage,
+           poa = mpoa) %>%
+    dplyr::mutate(hhidpn = as.integer(hhidpn))
+#n=4018
+
+# Merge datasets
+main_df = left_join(socialmobility_df, trackerfile_df, by = "hhidpn")
+main_df = left_join(main_df, phenoage_df, by = "hhidpn")
+main_df = left_join(main_df, bioage_df, by = "hhidpn")
+main_df = left_join(main_df, methylclock_df, by = "hhidpn")
+main_df =
+  main_df %>%
+  filter(!is.na(page)) %>%
+  rename(age = page)
+
+# Generate methylation clock advancement measures
+levinednam_advance_reg =
+  lm(levinednam ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(levinednam_advance_reg, var = "levinednam_pred") %>%
+  dplyr::mutate(levinednam_advance = levinednam - levinednam_pred)
+
+hannum_advance_reg =
+  lm(hannum ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(hannum_advance_reg, var = "hannum_pred") %>%
+  dplyr::mutate(hannum_advance = hannum - hannum_pred)
+
+horvath_advance_reg =
+  lm(horvath ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(horvath_advance_reg, var = "horvath_pred") %>%
+  dplyr::mutate(horvath_advance = horvath - horvath_pred)
+
+grimage_advance_reg =
+  lm(grimage ~ age, data = main_df)
+
+main_df =
+  main_df %>%
+  add_predictions(grimage_advance_reg, var = "grimage_pred") %>%
+  dplyr::mutate(grimage_advance = grimage - grimage_pred)
+
+# Standardize biological and methylation aging clock advancement variables
+main_df =
+  main_df %>%
+  dplyr::mutate(
+         levinephenoageadv_sd = (levinephenoage_advance - mean(main_df$levinephenoage_advance, na.rm = T))/sd(main_df$levinephenoage_advance, na.rm = T),
+         kdma_sd = (kdm_advance - mean(main_df$kdm_advance, na.rm = T))/sd(main_df$kdm_advance, na.rm = T),
+         hdlog_sd = (hd_log - mean(main_df$hd_log, na.rm = T))/sd(main_df$hd_log, na.rm = T),
+         levinednamadv_sd = (levinednam_advance - mean(main_df$levinednam_advance, na.rm = T))/sd(main_df$levinednam_advance, na.rm = T),
+         hannumadv_sd = (hannum_advance - mean(main_df$hannum_advance, na.rm = T))/sd(main_df$hannum_advance, na.rm = T),
+         horvathadv_sd = (horvath_advance - mean(main_df$horvath_advance, na.rm = T))/sd(main_df$horvath_advance, na.rm = T),
+         grimageadv_sd = (grimage_advance - mean(main_df$grimage_advance, na.rm = T))/sd(main_df$grimage_advance, na.rm = T),
+         poa_sd = (poa - mean(main_df$poa, na.rm = T))/sd(main_df$poa, na.rm = T)
+         )
+
+# Cleaning dataset
+main_df =
+  main_df %>%
+  dplyr::select(
+    hhid, hhidpn:racohbyr, hispanic, rafeduc, rameduc, age, pctso_bc, zso_bc, pctwlth13, zwlth13, rpct13_bc, dpct13_bc, rz13_bc, dz13_bc, fameduc, levinephenoage:poa_sd) %>%
+  mutate(
+    educ = ifelse(raeduc == "1.lt high-school" | raeduc == "2.ged", "<HS",
+            ifelse(raeduc == "3.high-school graduate" | raeduc == "4.some college", "HS",
+            ifelse(raeduc == "5.college and above", "BA+",
+            ifelse(is.na(raeduc), NA, 666)))),
+    paryrseduc = ifelse(is.na(rameduc) | ((rafeduc >= rameduc) & !is.na(rafeduc)) , rafeduc, rameduc)
+  ) %>%
+  mutate(educ = factor(educ, levels = c("<HS", "HS", "BA+")),
+         pareduc = ifelse(paryrseduc < 12, "<HS",
+                    ifelse(paryrseduc >= 12 & paryrseduc <= 15, "HS",
+                    ifelse(paryrseduc >= 16, "BA+", 666))),
+         agesquared = age^2,
+         hispanic = ifelse(hispanic == "5", 0, 1),
+         pctso_bc = pctso_bc/25,
+         pctwlth13 = pctwlth13/25,
+         rpct13_bc = rpct13_bc/25,
+         dpct13_bc = dpct13_bc/25,
+         ) %>%
+  mutate(pareduc = factor(pareduc, levels = c("<HS", "HS", "BA+")),
+         educ_num = ifelse(educ == "<HS", 1,
+                      ifelse(educ == "HS", 2,
+                      ifelse(educ == "BA+", 3,
+                      ifelse(is.na(educ), NA, 666)))),
+         pareduc_num = ifelse(pareduc == "<HS", 1,
+                      ifelse(pareduc == "HS", 2,
+                      ifelse(pareduc == "BA+", 3,
+                      ifelse(is.na(pareduc), NA, 666)))),
+         fameduc_num = ifelse(fameduc == "Low", 1,
+                      ifelse(fameduc == "Middle", 2,
+                      ifelse(fameduc == "High", 3,
+                      ifelse(is.na(fameduc), NA, 666))))
+         ) %>%
+  mutate(edmob_yrs = educ_num - pareduc_num,
+         edmob_index = educ_num - fameduc_num
+         ) %>%
+  filter(!is.na(pctso_bc) & !is.na(pctwlth13) & !is.na(raracem))
+#n=20607
+```
+
+## Analysis samples
+```{r echo=FALSE}
+# Full sample (n=20683)
+full_sample = 
+  main_df
+#n=20683
+
+full_sample_NH = 
+  full_sample %>%
+  filter(hispanic == 0)
+#n=17267
+
+# Biomarker sample
+BA_subsample =
+  main_df %>%
+  filter(!is.na(levinephenoage) & !is.na(kdm) & !is.na(hd_log))
+#9255
+
+BA_subsample_NH = 
+  BA_subsample %>%
+  filter(hispanic == 0)
+#7898
+
+# DNAm sample
+DNAm_subsample =
+  main_df %>%
+  filter(!is.na(horvath) | !is.na(hannum) | !is.na(levinednam) | !is.na(grimage) | !is.na(poa))
+#n=3976
+
+DNAm_subsample_NH = 
+  DNAm_subsample %>%
+  filter(hispanic == 0)
+#n=3426
+
+# Education subsamples 
+BA_subsample_ED =
+  BA_subsample %>%
+  filter(!is.na(edmob_yrs))
+#n=8759
+
+DNAm_subsample_ED =
+  DNAm_subsample %>%
+  filter(!is.na(edmob_yrs))
+#n=3774
+
+## For interaction term analysis- datasets restricted to Black and white participants
+BA_subsample_bw =
+  BA_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american"))
+#n=8451
+
+BA_subsample_bw_ED =
+  BA_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american")) %>%
+  filter(!is.na(edmob_yrs))
+#n=8451
+
+DNAm_subsample_bw =
+  DNAm_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american"))
+#n=3661
+
+DNAm_subsample_bw_ED =
+  DNAm_subsample_NH %>%
+  filter(raracem %in% c("1.white/caucasian", "2.black/african american")) %>%
+  filter(!is.na(edmob_yrs))
+#n=3661
+
+## For analysis of middle 50% of social origins distribution (zso_bc)
+summary(pull(BA_subsample, zso_bc))
+
+BA_subsample_middle = 
+  BA_subsample %>%
+  filter(zso_bc > -0.6751444 & zso_bc < 0.6251319)
+#n=4619
+
+summary(pull(DNAm_subsample, zso_bc))
+
+DNAm_subsample_middle = 
+  DNAm_subsample %>%
+  filter(zso_bc > -0.62451 & zso_bc < 0.67453)
+#n=1971
+```
+
+## Age distributions for each sample, by race and sex
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = age, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = age, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = age, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Chronological age distribution, full sample") +
+  xlab("Chronological Age") +
+  ylab(NULL)
+
+# FOR LEGEND
+# ggplot() +
+#   geom_histogram(data = full_sample, aes(x = age, y = ..count.., color = "Full HRS 2016 Sample", fill = "Full HRS 2016 Sample"), alpha = 0.2, bins = 30) +
+#   geom_histogram(data = BA_subsample, aes(x = age, y = ..count.., color = "VBS subsample", fill = "VBS subsample"), alpha = 0.2, bins = 30) +
+#   geom_histogram(data = DNAm_subsample, aes(x = age, y = ..count.., color = "VBS-DNAm subsample", fill = "VBS-DNAm subsample"), alpha = 0.2, bins = 30) +
+#   theme_minimal() +
+#   labs(title = "Chronological age distribution, full sample") +
+#   xlab("Chronological Age") +
+#   ylab(NULL) +
+#   scale_colour_manual(name = "Sample",
+#                       values=c("Full HRS 2016 Sample"="grey65", 
+#                                "VBS subsample"="tomato", 
+#                                "VBS-DNAm subsample"="dodgerblue1"),
+#                       breaks=c("Full HRS 2016 Sample","VBS subsample","VBS-DNAm subsample")
+#                       ) +
+#   scale_fill_manual(name = "Sample",
+#                     values=c("Full HRS 2016 Sample"="grey65", 
+#                                "VBS subsample"="tomato", 
+#                                "VBS-DNAm subsample"="dodgerblue1"),
+#                       breaks=c("Full HRS 2016 Sample","VBS subsample","VBS-DNAm subsample")
+#                       ) 
+
+
+
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = age, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = age, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = age, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Chronological age distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Chronological Age") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = age, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = age, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = age, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Chronological age distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Chronological Age") +
+  ylab(NULL)
+```
+
+## Social origins distributions for each sample, by race and sex
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, full sample") +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zso_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zso_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zso_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social origins distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Origins (z-score)") +
+  ylab(NULL)
+```
+
+## Adult wealth distributions for each sample, by race and sex
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zwlth13, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zwlth13, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zwlth13, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social attainments distribution, full sample") +
+  xlab("Social Attainments (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = zwlth13, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = zwlth13, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = zwlth13, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social attainments distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Attainments (z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = zwlth13, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = zwlth13, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = zwlth13, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social attainments distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Attainments (z-score)") +
+  ylab(NULL)
+```
+
+## Social mobility distributions for each sample, by race and sex (delta)
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = dz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = dz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = dz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, full sample") +
+  xlab("Social Mobility (Delta, z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = dz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = dz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = dz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Mobility (Delta z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = dz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = dz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = dz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Mobility (Delta z-score)") +
+  ylab(NULL)
+```
+
+## Social mobility distributions for each sample, by race and sex (residualized-change)
+```{r echo=FALSE}
+#Combined distributions (counts)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = rz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = rz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = rz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, full sample") +
+  xlab("Social Mobility (Residualized-change, z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = rz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = rz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = rz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, by race") +
+  facet_grid(cols = vars(raracem)) +
+  xlab("Social Mobility (Residualized-change, z-score)") +
+  ylab(NULL)
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = rz13_bc, y = ..count..), color = "grey65", fill = "grey65", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = rz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = rz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Social mobility distribution, by gender") +
+  facet_grid(cols = vars(ragender)) +
+  xlab("Social Mobility (Residualized-change, z-score)") +
+  ylab(NULL)
+```
+
+## Additional distribution figures
+```{r echo=FALSE}
+#Combined distributions (frequencies)
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = age, y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = age, y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = age, y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, full sample")
+
+ggplot() +
+  geom_histogram(data = full_sample %>% filter(!is.na(raracem)), aes(x = age, y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample %>% filter(!is.na(raracem)), aes(x = age, y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample %>% filter(!is.na(raracem)), aes(x = age, y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, by race") +
+  facet_grid(cols = vars(raracem))
+
+ggplot() +
+  geom_histogram(data = full_sample, aes(x = age, y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.2, bins = 30) +
+  geom_histogram(data = BA_subsample, aes(x = age, y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = age, y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, by gender") +
+  facet_grid(cols = vars(ragender))
+
+#Full sample
+full_sample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, full sample")
+
+full_sample %>%
+  filter(!is.na(raracem)) %>%
+  group_by(raracem) %>%
+  ggplot(aes(x = age, group = raracem)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, full sample, by race") +
+  facet_grid(cols = vars(raracem))
+
+full_sample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "seagreen", fill = "seagreen", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, full sample, by gender") +
+  facet_grid(cols = vars(ragender))
+
+#VBS sample
+
+BA_subsample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, VBS sample")
+
+BA_subsample %>%
+  filter(!is.na(raracem)) %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, VBS sample, by race") +
+  facet_grid(cols = vars(raracem))
+
+BA_subsample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, VBS sample, by gender") +
+  facet_grid(cols = vars(ragender))
+
+#DNAm sample
+DNAm_subsample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, DNAm subsample")
+
+DNAm_subsample %>%
+  filter(!is.na(raracem)) %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, DNAm subsample, by race") +
+  facet_grid(cols = vars(raracem))
+
+DNAm_subsample %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), color = "tomato", fill = "tomato", alpha = 0.4, bins = 30) +
+  theme_minimal() +
+  labs(title = "Age distribution, DNAm subsample, by gender") +
+  facet_grid(cols = vars(ragender))
+```
+
+
+## Basic descriptive statistics (Table 1)
+
+Panel A
+```{r echo=FALSE}
+# Lists
+analysis_samples = 
+  list(full_sample = full_sample, BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+BA_measures =
+  list(levinephenoage = "levinephenoage", levinephenoage_advance = "levinephenoage_advance", kdm = "kdm", kdm_advance = "kdm_advance", hd_log = "hd_log", horvath = "horvath", horvath_advance = "horvath_advance", hannum = "hannum", hannum_advance = "hannum_advance", levinednam = "levinednam", levinednam_advance = "levinednam_advance", grimage = "grimage", grimage_advance = "grimage_advance", poa = "poa")
+social_measures =
+  list(zso_bc = "zso_bc", zwlth13 = "zwlth13", dz13_bc = "dz13_bc", rz13_bc = "rz13_bc", pctso_bc = "pctso_bc", pctwlth13 = "pctwlth13", dpct13_bc = "dpct13_bc", rpct13_bc = "rpct13_bc")
+
+# Panel A
+## Descriptives- continuous
+age_summary =
+  function(sample) {
+  mean_age = mean(pull(sample, age), na.rm = T)
+  sd_age = sd(pull(sample, age), na.rm = T)
+
+  tibble(
+    mean_age = mean_age, 
+    sd_age = sd_age
+    )
+  }
+
+output_agedesc = 
+  map_dfr(analysis_samples, age_summary, .id = "variable") %>%
+  mutate(
+    mean_age = round(mean_age, 1),
+    sd_age = round(sd_age, 1),
+    age_mean_sd = paste(mean_age," (",sd_age,")", sep = "")) %>%
+  select(variable, age_mean_sd) %>%
+  pivot_wider(names_from = "variable", values_from = "age_mean_sd")
+
+output_agedesc %>%
+  knitr::kable()
+
+mean(BA_subsample$age)
+sd(BA_subsample$age)
+
+mean(DNAm_subsample$age)
+sd(DNAm_subsample$age)
+
+
+## Descriptives- categorical
+descriptives_cat =
+  function(sample) {
+  sex_dist = prop.table(table(pull(sample, ragender), useNA = "ifany")) %>% 
+    as.data.frame() %>%
+    pivot_wider(names_from = "Var1", values_from = "Freq")
+  race_dist = prop.table(table(pull(sample, raracem), useNA = "ifany")) %>% 
+    as.data.frame() %>%
+    pivot_wider(names_from = "Var1", values_from = "Freq")
+
+  bind_cols(sex_dist, race_dist)
+  }
+
+output_contdesc = 
+  map_dfr(analysis_samples, descriptives_cat, .id = "variable") %>%
+  mutate_if(is.numeric, ~100*(.)) %>%
+  mutate_if(is.numeric, ~round(.,1)) %>%
+  pivot_longer(c(`1.male`:`3.other`), names_to = "group") %>%
+  pivot_wider(names_from = variable)
+
+output_contdesc %>%
+  knitr::kable()
+
+# Panel A Part 2: SES measures
+# Panel B
+social_summary_f =
+  function(sample, socmeasure) {
+  mean = mean(pull(sample, socmeasure), na.rm = T)
+  sd = sd(pull(sample, socmeasure), na.rm = T)
+
+  tibble(
+    mean = mean, 
+    sd = sd,
+    )
+  }
+
+### Analysis combinations
+dataset_social_combo_list = 
+  list(x = analysis_samples, y = social_measures)
+dataset_social_combo = 
+  cross_df(dataset_social_combo_list) %>%
+  rename(sample = x, measure = y)
+
+### Applying function
+social_summary_measures =
+  map2_dfr(dataset_social_combo$sample, dataset_social_combo$measure, social_summary_f) %>%
+  mutate(data = rep(c("full_sample", "BA_subsample", "DNAm_subsample"), 8),
+         social_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 3)
+         ) %>%
+  select(data, social_measure, everything()) %>%
+  mutate(mean = format(round(mean, 2), nsmall = 2),
+         sd = format(round(sd, 2), nsmall = 2)
+         ) %>%
+  pivot_wider(names_from = data, values_from = c(mean, sd)) %>%
+  select(social_measure, ends_with("full_sample"), ends_with("BA_subsample"), ends_with("DNAm_subsample")) %>%
+  mutate(mean_sd_full = paste(mean_full_sample, " (", sd_full_sample, ")", sep = ""),
+         mean_sd_BA = paste(mean_BA_subsample, " (", sd_BA_subsample, ")", sep = ""),
+         mean_sd_DNAm = paste(mean_DNAm_subsample, " (", sd_DNAm_subsample, ")", sep = ""),
+         ) %>%
+  select(social_measure, mean_sd_full, mean_sd_BA, mean_sd_DNAm)
+
+social_summary_measures %>%
+  knitr::kable()
+```
+
+Panel B
+```{r echo=FALSE}
+BA_summary_f =
+  function(sample, BA) {
+  mean = mean(pull(sample, BA), na.rm = T)
+  sd = sd(pull(sample, BA), na.rm = T)
+  r = cor(pull(sample, BA), pull(sample, age), method = "pearson", use = "complete.obs")
+
+  tibble(
+    mean = mean, 
+    sd = sd,
+    r = r,
+    )
+  }
+
+### Analysis combinations
+dataset_BA_combo_list = 
+  list(x = analysis_samples, y = BA_measures)
+dataset_BA_combo = 
+  cross_df(dataset_BA_combo_list) %>%
+  rename(sample = x, measure = y)
+
+### Applying function
+BA_summary_measures =
+  map2_dfr(dataset_BA_combo$sample, dataset_BA_combo$measure, BA_summary_f) %>%
+  mutate(data = rep(c("full_sample", "BA_subsample", "DNAm_subsample"), 14),
+         bioage_measure = rep(c("levinephenoage", "levinephenoage_advance", "kdm", "kdm_advance", "hd_log", "horvath", "horvath_advance", "hannum", "hannum_advance", "levinednam", "levinednam_advance", "grimage", "grimage_advance", "poa"), each = 3)
+         ) %>%
+  select(data, bioage_measure, everything()) %>%
+  mutate(mean = round(mean, 1),
+         sd = round(sd, 1),
+         r = round(r, 2)
+         ) %>%
+  pivot_wider(names_from = data, values_from = c(mean, sd, r)) %>%
+  select(bioage_measure, ends_with("full_sample"), ends_with("BA_subsample"), ends_with("DNAm_subsample"))
+
+BA_summary_measures %>%
+  knitr::kable()
+```
+
+Panel C
+```{r echo=FALSE}
+#Full sample
+table(full_sample$educ, full_sample$fameduc, useNA = "no") %>%
+  addmargins()
+panelc1_full = prop.table(table(full_sample$educ, full_sample$fameduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc1_full %>%
+  knitr::kable()
+
+table(full_sample$educ, full_sample$pareduc, useNA = "no") %>%
+  addmargins()
+panelc2_full = prop.table(table(full_sample$educ, full_sample$pareduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc2_full %>%
+  knitr::kable()
+
+#Biomarker subsample
+table(BA_subsample$educ, BA_subsample$fameduc, useNA = "no") %>%
+  addmargins()
+panelc1_BA = prop.table(table(BA_subsample$educ, BA_subsample$fameduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc1_BA %>%
+  knitr::kable()
+
+table(BA_subsample$educ, BA_subsample$pareduc, useNA = "no") %>%
+  addmargins()
+panelc2_BA = prop.table(table(BA_subsample$educ, BA_subsample$pareduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc2_BA %>%
+  knitr::kable()
+
+
+#DNAm subsample
+table(DNAm_subsample$educ, DNAm_subsample$fameduc, useNA = "no") %>%
+  addmargins()
+panelc1_DNAm = prop.table(table(DNAm_subsample$educ, DNAm_subsample$fameduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc1_DNAm %>%
+  knitr::kable()
+
+table(DNAm_subsample$educ, DNAm_subsample$pareduc, useNA = "no") %>%
+  addmargins()
+panelc2_DNAm = prop.table(table(DNAm_subsample$educ, DNAm_subsample$pareduc, useNA = "no"), 2) %>%
+  addmargins(1) %>%
+  round(2)
+panelc2_DNAm %>%
+  knitr::kable()
+```
+
+
+## Table 2
+
+Input lists
+```{r echo=FALSE, results=FALSE}
+# Creating input lists: samples (2: biomarker and DNAm), biological-age advancement measures (8 measures, standardized), 8 measures of SES (4 z-score, 4 percentile (within each, childhood SES, adult wealth, Delta social mobility, residualized social mobility))
+
+## Sample
+coremodel_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+coremodel_EDsamples = list(BA_subsample_ED = BA_subsample_ED, DNAm_subsample_ED = DNAm_subsample_ED)
+
+## BA measures
+coremodel_BAmeasures = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", horvathadv_sd = "horvathadv_sd", hannumadv_sd = "hannumadv_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+
+# Outcome measures
+coremodel_SESmeasures = list(zso_bc = "zso_bc", zwlth13 = "zwlth13", dz13_bc = "dz13_bc", rz13_bc = "rz13_bc", pctso_bc = "pctso_bc", pctwlth13 = "pctwlth13", dpct13_bc = "dpct13_bc", rpct13_bc = "rpct13_bc")
+coremodel_EDmeasures = list(educ = "educ_num", fameduc = "fameduc_num", pareduc = "pareduc_num", edmob_yrs = "edmob_yrs", edmob_index = "edmob_index")
+```
+
+Analysis combinations
+```{r echo=FALSE}
+### SES combination
+model1_combo_list = 
+  list(BAmeasure = coremodel_BAmeasures, SESmeasure = coremodel_SESmeasures, df = coremodel_samples)
+dataset_model1_combo_list = 
+  cross_df(model1_combo_list)
+
+### ED combination
+model1_combo_list_ed = 
+  list(BAmeasure = coremodel_BAmeasures, SESmeasure = coremodel_EDmeasures, df = coremodel_EDsamples)
+dataset_model1_combo_list_ed = 
+  cross_df(model1_combo_list_ed)
+```
+
+Function writing
+```{r echo=FALSE, results=FALSE}
+# # function foundation example
+# test =
+#   lm.cluster(levinephenoageadv_sd ~ pctso_bc + age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = DNAm_subsample, cluster = "hhid") %>%
+#   summary() %>%
+#   as.data.frame() %>%
+#   tibble::rownames_to_column(var = "term") %>%
+#   janitor::clean_names() %>%
+#   rename(std.error = std_error,
+#          p.value = pr_t) %>%
+#   filter(term == "pctso_bc") %>%
+#   mutate(lowerCI = round(estimate - 1.96*std.error, 2),
+#          upperCI = round(estimate + 1.96*std.error, 2)
+#          ) %>%
+#   mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = "")) %>%
+#   select(term, estimate, CI, p.value)
+
+### Function
+model1_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = df, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+         p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure)") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+          p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# use cases
+# model1_f(BAmeasure = "grimageadv_sd", "pctso_bc", df = DNAm_subsample)
+# model1_f(BAmeasure = "levinephenoageadv_sd", "educ_num", df = BA_subsample)
+
+cor(full_sample$zso_bc, full_sample$zwlth13)
+cor(BA_subsample$zso_bc, BA_subsample$zwlth13)
+cor(DNAm_subsample$zso_bc, DNAm_subsample$zwlth13)
+
+cor(full_sample$pctso_bc, full_sample$pctwlth13)
+cor(BA_subsample$pctso_bc, BA_subsample$pctwlth13)
+cor(DNAm_subsample$pctso_bc, DNAm_subsample$pctwlth13)
+
+```
+
+Table 2- SES measures
+```{r echo=FALSE, include=FALSE}
+### Applying function
+coremodel_SES_estimates = 
+  pmap_dfr(list(dataset_model1_combo_list$BAmeasure, dataset_model1_combo_list$SESmeasure, dataset_model1_combo_list$df), model1_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 16),
+    SES_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 64),
+    scale = ifelse(SES_measure %in% c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc"), "z",
+            ifelse(SES_measure %in% c("pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), "pct", 666)),
+    SES_measuretype = ifelse(SES_measure %in% c("zso_bc", "pctso_bc"), "childhoodSES",
+                       ifelse(SES_measure %in% c("zwlth13", "pctwlth13"), "adultwlth",
+                      ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))))
+    ) %>%
+  select(SES_measuretype, scale, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measuretype, scale, bioage_measure, 
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         )
+```
+
+```{r echo=FALSE}
+coremodel_SES_estimates %>%
+  knitr::kable()
+```
+
+Table 2- Education measures
+```{r echo=FALSE, include=FALSE}
+### Applying function
+coremodel_ED_estimates = 
+  pmap_dfr(list(dataset_model1_combo_list_ed$BAmeasure, dataset_model1_combo_list_ed$SESmeasure, dataset_model1_combo_list_ed$df), model1_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 10),
+    SES_measure = rep(c("educ_num", "fameduc_num", "pareduc_num", "edmob_yrs", "edmob_index"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 40)
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure, 
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         )
+```
+
+```{r echo=FALSE}
+coremodel_ED_estimates %>%
+  knitr::kable()
+```
+
+
+## Table 3- Sex-stratified interaction analyses
+
+Subsets
+```{r echo=FALSE}
+## Gender
+BA_subsample_women =
+  BA_subsample %>%
+  filter(ragender == "2.female")
+#n=5462
+BA_subsample_men =
+  BA_subsample %>%
+  filter(ragender == "1.male")
+#n=3973
+DNAm_subsample_women =
+  DNAm_subsample %>%
+  filter(ragender == "2.female")
+#n=2322
+DNAm_subsample_men =
+  DNAm_subsample %>%
+  filter(ragender == "1.male")
+#n=1654
+
+BA_subsample_women_ED =
+  BA_subsample %>%
+  filter(ragender == "2.female" & !is.na(edmob_yrs))
+#n=5193
+BA_subsample_men_ED =
+  BA_subsample %>%
+  filter(ragender == "1.male" & !is.na(edmob_yrs))
+#n=3566
+DNAm_subsample_women_ED =
+  DNAm_subsample %>%
+  filter(ragender == "2.female" & !is.na(edmob_yrs))
+#n=2215
+DNAm_subsample_men_ED =
+  DNAm_subsample %>%
+  filter(ragender == "1.male" & !is.na(edmob_yrs))
+#n=1559
+
+```
+
+Input lists
+```{r echo=FALSE}
+############# Main effects model
+
+# Samples
+stratmodel_samples_sex = list(BA_subsample_women = BA_subsample_women, BA_subsample_men = BA_subsample_men, DNAm_subsample_women = DNAm_subsample_women, DNAm_subsample_men = DNAm_subsample_men)
+
+stratmodel_samples_sex_ED = list(BA_subsample_women_ED = BA_subsample_women_ED, BA_subsample_men_ED = BA_subsample_men_ED, DNAm_subsample_women_ED = DNAm_subsample_women_ED, DNAm_subsample_men_ED = DNAm_subsample_men_ED)
+
+# BA measures
+stratmodel_BAmeasures = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", horvathadv_sd = "horvathadv_sd", hannumadv_sd = "hannumadv_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+
+# Outcome measures
+stratmodel_SESmeasures = list(zso_bc = "zso_bc", zwlth13 = "zwlth13", dz13_bc = "dz13_bc", rz13_bc = "rz13_bc", pctso_bc = "pctso_bc", pctwlth13 = "pctwlth13", dpct13_bc = "dpct13_bc", rpct13_bc = "rpct13_bc")
+
+stratmodel_EDmeasures = list(educ_num = "educ_num", fameduc_num = "fameduc_num", pareduc_num = "pareduc_num", edmob_yrs = "edmob_yrs", edmob_index = "edmob_index")
+
+############# Interaction model
+
+intmodel_sexdiff_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+
+intmodel_sexdiff_samples_ED = list(BA_subsample_ED = BA_subsample_ED, DNAm_subsample_ED = DNAm_subsample_ED)
+
+intmodel_BAmeasures = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", horvathadv_sd = "horvathadv_sd", hannumadv_sd = "hannumadv_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+
+intmodel_SESmeasures = list(zso_bc = "zso_bc", zwlth13 = "zwlth13", dz13_bc = "dz13_bc", rz13_bc = "rz13_bc", pctso_bc = "pctso_bc", pctwlth13 = "pctwlth13", dpct13_bc = "dpct13_bc", rpct13_bc = "rpct13_bc")
+
+intmodel_EDmeasures = list(educ_num = "educ_num", fameduc_num = "fameduc_num", pareduc_num = "pareduc_num", edmob_yrs = "edmob_yrs", edmob_index = "edmob_index")
+
+```
+
+Analysis combinations
+```{r echo=FALSE}
+### SES combination
+sexstrat_combo_list = 
+  list(BAmeasure = stratmodel_BAmeasures, SESmeasure = stratmodel_SESmeasures, df = stratmodel_samples_sex)
+dataset_sexstrat_combo_list = 
+  cross_df(sexstrat_combo_list)
+
+### ED combination
+sexstrat_combo_list_ED = 
+  list(BAmeasure = stratmodel_BAmeasures, SESmeasure = stratmodel_EDmeasures, df = stratmodel_samples_sex_ED)
+dataset_sexstrat_combo_list_ED = 
+  cross_df(sexstrat_combo_list_ED)
+
+### Interaction term combinations
+intmodel_sexdiff_combo_list = 
+  list(BAmeasure = intmodel_BAmeasures, SESmeasure = intmodel_SESmeasures, df = intmodel_sexdiff_samples)
+dataset_intmodel_sexdiff_combo_list = 
+  cross_df(intmodel_sexdiff_combo_list)
+
+intmodel_sexdiff_combo_list_ED = 
+  list(BAmeasure = intmodel_BAmeasures, SESmeasure = intmodel_EDmeasures, df = intmodel_sexdiff_samples_ED)
+dataset_intmodel_sexdiff_combo_list_ED = 
+  cross_df(intmodel_sexdiff_combo_list_ED)
+```
+
+Writing function
+```{r echo=FALSE}
+### Sex-stratified function (from Model 1, omit sex)
+model1_sexstrat_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + raracem + hispanic, data = df, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure)") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# Use case (SES): model1_sexstrat_f("kdma_sd", "zwlth13", BA_subsample_women)
+# Use case (ED): model1_sexstrat_f("kdma_sd", "edmob_yrs", BA_subsample_women_ED)
+
+### Function for interaction term
+model4_sex_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+         pull(df, SESmeasure) + 
+         age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender +
+         ragender:pull(df, SESmeasure) + ragender:raracem + ragender:hispanic
+         , data = df, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure):ragender2.female") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# Use case (SES): model4_sex_f("kdma_sd", "zwlth13", BA_subsample)
+# Use case (ED): model4_sex_f("kdma_sd", "pareduc_num", BA_subsample_ED)
+```
+
+Applying function: sex-stratified SES measures
+```{r echo=FALSE, include=FALSE}
+sexstratmodel_estimates = 
+  pmap_dfr(list(dataset_sexstrat_combo_list$BAmeasure, dataset_sexstrat_combo_list$SESmeasure, dataset_sexstrat_combo_list$df), model1_sexstrat_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 32),
+    SES_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 4),
+    data = rep(c("BA_subsample_women", "BA_subsample_men", "DNAm_subsample_women", "DNAm_subsample_men"), each = 64),
+    scale = ifelse(SES_measure %in% c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc"), "z",
+            ifelse(SES_measure %in% c("pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), "pct", 666)),
+    SES_measuretype = ifelse(SES_measure %in% c("zso_bc", "pctso_bc"), "childhoodSES",
+                       ifelse(SES_measure %in% c("zwlth13", "pctwlth13"), "adultwlth",
+                      ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))))
+    ) %>%
+  select(SES_measuretype, scale, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = c(data), values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measuretype, bioage_measure, scale,
+         estimate_BA_subsample_women, CI_BA_subsample_women, p.value_BA_subsample_women,
+         estimate_BA_subsample_men, CI_BA_subsample_men, p.value_BA_subsample_men,
+         estimate_DNAm_subsample_women, CI_DNAm_subsample_women, p.value_DNAm_subsample_women,
+         estimate_DNAm_subsample_men, CI_DNAm_subsample_men, p.value_DNAm_subsample_men
+         )
+```
+
+```{r echo=FALSE}
+sexstratmodel_estimates %>%
+  knitr::kable()
+```
+
+Applying function: sex-stratified ED measures
+```{r echo=FALSE, include=FALSE}
+sexstratmodel_estimates_ED = 
+  pmap_dfr(list(dataset_sexstrat_combo_list_ED$BAmeasure, dataset_sexstrat_combo_list_ED$SESmeasure, dataset_sexstrat_combo_list_ED$df), model1_sexstrat_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 20),
+    SES_measure = rep(c("educ_num", "fameduc_num", "pareduc_num", "edmob_yrs", "edmob_index"), each = 8, 4),
+    data = rep(c("BA_subsample_women", "BA_subsample_men", "DNAm_subsample_women", "DNAm_subsample_men"), each = 40)
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure,
+         estimate_BA_subsample_women, CI_BA_subsample_women, p.value_BA_subsample_women,
+         estimate_BA_subsample_men, CI_BA_subsample_men, p.value_BA_subsample_men,
+         estimate_DNAm_subsample_women, CI_DNAm_subsample_women, p.value_DNAm_subsample_women,
+         estimate_DNAm_subsample_men, CI_DNAm_subsample_men, p.value_DNAm_subsample_men
+         )
+```
+
+```{r echo=FALSE}
+sexstratmodel_estimates_ED %>%
+  knitr::kable()
+```
+
+Applying function: interaction term SES measures
+```{r echo=FALSE, include=FALSE}
+intmodel_sex_estimates = 
+  pmap_dfr(list(dataset_intmodel_sexdiff_combo_list$BAmeasure,
+                dataset_intmodel_sexdiff_combo_list$SESmeasure, 
+                dataset_intmodel_sexdiff_combo_list$df), model4_sex_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 16),
+    SES_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 64),
+    scale = ifelse(SES_measure %in% c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc"), "z",
+            ifelse(SES_measure %in% c("pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), "pct", 666)),
+    SES_measuretype = ifelse(SES_measure %in% c("zso_bc", "pctso_bc"), "childhoodSES",
+                       ifelse(SES_measure %in% c("zwlth13", "pctwlth13"), "adultwlth",
+                      ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))))
+    ) %>%
+  select(SES_measuretype, scale, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measuretype, bioage_measure, scale,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample
+         )
+```
+
+```{r echo=FALSE}
+intmodel_sex_estimates %>%
+  knitr::kable()
+```
+
+Applying function: interaction term ED measures
+```{r echo=FALSE, include=FALSE}
+intmodel_sex_estimates_ED = 
+  pmap_dfr(list(dataset_intmodel_sexdiff_combo_list_ED$BAmeasure,
+                dataset_intmodel_sexdiff_combo_list_ED$SESmeasure, 
+                dataset_intmodel_sexdiff_combo_list_ED$df), model4_sex_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 10),
+    SES_measure = rep(c("educ_num", "fameduc_num", "pareduc_num", "edmob_yrs", "edmob_index"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 40)
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample
+         )
+```
+
+```{r echo=FALSE}
+intmodel_sex_estimates_ED %>%
+  knitr::kable()
+```
+
+
+## Table 4- Race-stratified interaction analyses
+
+Subsets
+```{r echo=FALSE}
+## Race
+BA_subsample_black =
+  BA_subsample_NH %>%
+  filter(raracem == "2.black/african american")
+BA_subsample_white =
+  BA_subsample_NH %>%
+  filter(raracem == "1.white/caucasian")
+DNAm_subsample_black =
+  DNAm_subsample_NH %>%
+  filter(raracem == "2.black/african american")
+DNAm_subsample_white =
+  DNAm_subsample_NH %>%
+  filter(raracem == "1.white/caucasian")
+
+BA_subsample_black_ED =
+  BA_subsample_NH %>%
+  filter(raracem == "2.black/african american" & !is.na(edmob_yrs))
+BA_subsample_white_ED =
+  BA_subsample_NH %>%
+  filter(raracem == "1.white/caucasian" & !is.na(edmob_yrs))
+DNAm_subsample_black_ED =
+  DNAm_subsample_NH %>%
+  filter(raracem == "2.black/african american" & !is.na(edmob_yrs))
+DNAm_subsample_white_ED =
+  DNAm_subsample_NH %>%
+  filter(raracem == "1.white/caucasian" & !is.na(edmob_yrs))
+```
+
+Input lists
+```{r echo=FALSE}
+############# Main effects model
+
+#Samples
+stratmodel_samples_race = list(BA_subsample_black = BA_subsample_black, BA_subsample_white = BA_subsample_white, DNAm_subsample_black = DNAm_subsample_black, DNAm_subsample_white = DNAm_subsample_white)
+
+stratmodel_samples_race_ED = list(BA_subsample_black_ED = BA_subsample_black_ED, BA_subsample_white_ED = BA_subsample_white_ED, DNAm_subsample_black_ED = DNAm_subsample_black_ED, DNAm_subsample_white_ED = DNAm_subsample_white_ED)
+
+# BA measures
+# use stratmodel_BAmeasures
+
+# Outcome measures
+# use stratmodel_SESmeasures and stratmodel_EDmeasures
+
+############# Interaction model
+
+intmodel_racediff_samples = list(BA_subsample_bw = BA_subsample_bw, DNAm_subsample_bw = DNAm_subsample_bw)
+
+intmodel_racediff_samples_ED = list(BA_subsample_bw_ED = BA_subsample_bw_ED, DNAm_subsample_bw_ED = DNAm_subsample_bw_ED)
+
+# Use intmodel_BAmeasures
+
+# Use intmodel_SESmeasures
+
+# Use intmodel_EDmeasures
+```
+
+Analysis combinations
+```{r echo=FALSE}
+### SES combination
+racestrat_combo_list = 
+  list(BAmeasure = stratmodel_BAmeasures, SESmeasure = stratmodel_SESmeasures, df = stratmodel_samples_race)
+dataset_racestrat_combo_list = 
+  cross_df(racestrat_combo_list)
+
+### ED combination
+racestrat_combo_list_ED = 
+  list(BAmeasure = stratmodel_BAmeasures, SESmeasure = stratmodel_EDmeasures, df = stratmodel_samples_race_ED)
+dataset_racestrat_combo_list_ED = 
+  cross_df(racestrat_combo_list_ED)
+
+### Interaction term
+intmodel_racediff_combo_list = 
+  list(BAmeasure = intmodel_BAmeasures, SESmeasure = intmodel_SESmeasures, df = intmodel_racediff_samples)
+dataset_intmodel_racediff_combo_list = 
+  cross_df(intmodel_racediff_combo_list)
+
+intmodel_racediff_combo_list_ED = 
+  list(BAmeasure = intmodel_BAmeasures, SESmeasure = intmodel_EDmeasures, df = intmodel_racediff_samples_ED)
+dataset_intmodel_racediff_combo_list_ED = 
+  cross_df(intmodel_racediff_combo_list_ED)
+```
+
+```{r echo=FALSE}
+# Race-stratified effects function
+model1_racestrat_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + age:ragender + agesquared:ragender, data = df, cluster = "hhid") %>%
+   summary() %>%
+   as.data.frame() %>%
+   tibble::rownames_to_column(var = "term") %>%
+   janitor::clean_names() %>%
+   rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure)") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# Use case (SES): model1_racestrat_f("kdma_sd", "zwlth13", BA_subsample_white)
+# Use case (ED): model1_racestrat_f("kdma_sd", "edmob_yrs", BA_subsample_black_ED)
+
+# Interaction term function
+model4_race_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+         pull(df, SESmeasure) + 
+         age + agesquared + ragender + raracem + age:ragender + agesquared:ragender +
+         raracem:pull(df, SESmeasure) + ragender:raracem
+         , data = df, cluster = "hhidpn") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure):raracem2.black/african american") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# Use case (SES): model4_race_f("kdma_sd", "zwlth13", BA_subsample_bw)
+# Use case (ED): model4_race_f("kdma_sd", "educ_num", BA_subsample_bw_ED)
+
+```
+
+Applying function: race-stratified SES measures
+```{r echo=FALSE, include=FALSE}
+racestratmodel_estimates = 
+  pmap_dfr(list(dataset_racestrat_combo_list$BAmeasure, dataset_racestrat_combo_list$SESmeasure, dataset_racestrat_combo_list$df), model1_racestrat_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 32),
+    SES_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 4),
+    data = rep(c("BA_subsample_black", "BA_subsample_white", "DNAm_subsample_black", "DNAm_subsample_white"), each = 64),
+    scale = ifelse(SES_measure %in% c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc"), "z",
+            ifelse(SES_measure %in% c("pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), "pct", 666)),
+    SES_measuretype = ifelse(SES_measure %in% c("zso_bc", "pctso_bc"), "childhoodSES",
+                       ifelse(SES_measure %in% c("zwlth13", "pctwlth13"), "adultwlth",
+                      ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))))
+    ) %>%
+  select(SES_measuretype, scale, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measuretype, bioage_measure, scale, 
+         estimate_BA_subsample_black, CI_BA_subsample_black, p.value_BA_subsample_black,
+         estimate_BA_subsample_white, CI_BA_subsample_white, p.value_BA_subsample_white,
+         estimate_DNAm_subsample_black, CI_DNAm_subsample_black, p.value_DNAm_subsample_black,
+         estimate_DNAm_subsample_white, CI_DNAm_subsample_white, p.value_DNAm_subsample_white,
+         )
+```
+
+```{r echo=FALSE}
+racestratmodel_estimates %>%
+  knitr::kable()
+```
+
+Applying function: race-stratified ED measures
+```{r echo=FALSE, include=FALSE}
+racestratmodel_estimates_ED = 
+  pmap_dfr(list(dataset_racestrat_combo_list_ED$BAmeasure, dataset_racestrat_combo_list_ED$SESmeasure, dataset_racestrat_combo_list_ED$df), model1_racestrat_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 20),
+    SES_measure = rep(c("educ_num", "fameduc_num", "pareduc_num", "edmob_yrs", "edmob_index"), each = 8, 4),
+    data = rep(c("BA_subsample_black", "BA_subsample_white", "DNAm_subsample_black", "DNAm_subsample_white"), each = 40)
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure, 
+         estimate_BA_subsample_black, CI_BA_subsample_black, p.value_BA_subsample_black,
+         estimate_BA_subsample_white, CI_BA_subsample_white, p.value_BA_subsample_white,
+         estimate_DNAm_subsample_black, CI_DNAm_subsample_black, p.value_DNAm_subsample_black,
+         estimate_DNAm_subsample_white, CI_DNAm_subsample_white, p.value_DNAm_subsample_white,
+         )
+```
+
+```{r echo=FALSE}
+racestratmodel_estimates_ED %>%
+  knitr::kable()
+```
+
+Applying function: interaction term SES measures
+```{r echo=FALSE, include=FALSE}
+intmodel_race_estimates = 
+  pmap_dfr(list(dataset_intmodel_racediff_combo_list$BAmeasure,
+                dataset_intmodel_racediff_combo_list$SESmeasure, 
+                dataset_intmodel_racediff_combo_list$df), model4_race_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 16),
+    SES_measure = rep(c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc", "pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 64),
+    scale = ifelse(SES_measure %in% c("zso_bc", "zwlth13", "dz13_bc", "rz13_bc"), "z",
+            ifelse(SES_measure %in% c("pctso_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), "pct", 666)),
+    SES_measuretype = ifelse(SES_measure %in% c("zso_bc", "pctso_bc"), "childhoodSES",
+                       ifelse(SES_measure %in% c("zwlth13", "pctwlth13"), "adultwlth",
+                      ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))))
+    ) %>%
+  select(SES_measuretype, scale, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measuretype, bioage_measure, scale,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         )
+```
+
+```{r echo=FALSE}
+intmodel_race_estimates %>%
+  knitr::kable()
+```
+
+Applying function: interaction term ED measures
+```{r echo=FALSE, include=FALSE}
+intmodel_race_estimates_ED = 
+  pmap_dfr(list(dataset_intmodel_racediff_combo_list_ED$BAmeasure,
+                dataset_intmodel_racediff_combo_list_ED$SESmeasure, 
+                dataset_intmodel_racediff_combo_list_ED$df), model4_race_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 10),
+    SES_measure = rep(c("educ_num", "fameduc_num", "pareduc_num", "edmob_yrs", "edmob_index"), each = 8, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 40),
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         )
+```
+
+```{r echo=FALSE}
+intmodel_race_estimates_ED %>%
+  knitr::kable()
+```
+
+
+## Table 5a: analysis of social origins (SES)
+
+Input lists
+```{r echo=FALSE}
+############# Interaction model
+# Sample
+intmodel_sodiff_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample, BA_subsample_middle = BA_subsample_middle, DNAm_subsample_middle = DNAm_subsample_middle)
+
+# BA measures
+# Use intmodel_BAmeasures
+
+#Outcome measures
+SES_measures_socialorigins = list(zwlth13 = "zwlth13", dz13_bc = "dz13_bc", rz13_bc = "rz13_bc", pctwlth13 = "pctwlth13", dpct13_bc = "dpct13_bc", rpct13_bc = "rpct13_bc")
+```
+
+Analysis combinations
+```{r echo=FALSE}
+## Interaction model
+intmodel_socialoriginsdiff_combo_list_SES = 
+  list(BAmeasure = intmodel_BAmeasures, SESmeasure = SES_measures_socialorigins, df = intmodel_sodiff_samples)
+dataset_intmodel_socialoriginsdiff_combo_list_SES = 
+  cross_df(intmodel_socialoriginsdiff_combo_list_SES)
+```
+
+Function writing
+```{r echo=FALSE}
+# Interaction term functions
+model4_socialorigins_z_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+         pull(df, SESmeasure) + 
+         age + agesquared + ragender + zso_bc + age:ragender + agesquared:ragender + raracem + hispanic +
+         zso_bc:pull(df, SESmeasure) + ragender:raracem + ragender:hispanic
+         , data = df, cluster = "hhid") %>%
+   summary() %>%
+   as.data.frame() %>%
+   tibble::rownames_to_column(var = "term") %>%
+   janitor::clean_names() %>%
+   rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure):zso_bc") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+model4_socialorigins_pct_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm.cluster(pull(df, BAmeasure) ~ 
+         pull(df, SESmeasure) + 
+         age + agesquared + ragender + pctso_bc + age:ragender + agesquared:ragender + raracem + hispanic +
+         pctso_bc:pull(df, SESmeasure) + ragender:raracem + ragender:hispanic
+         , data = df, cluster = "hhid") %>%
+   summary() %>%
+   as.data.frame() %>%
+   tibble::rownames_to_column(var = "term") %>%
+   janitor::clean_names() %>%
+   rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "pull(df, SESmeasure):pctso_bc") %>%
+  mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+         upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+         ) %>%
+  mutate(CI = paste("[", lowerCI, ",", upperCI, "]", sep = ""),
+         estimate = format(estimate, nsmall = 2),
+         p.value = formatC(p.value, format = "e")
+         ) %>%
+  select(term, estimate, CI, p.value)
+
+  }
+
+# Use cases:
+# model4_socialorigins_z_f("kdma_sd", "rz13_bc", BA_subsample)
+# model4_socialorigins_pct_f("kdma_sd", "rz13_bc", BA_subsample)
+```
+
+Applying interaction function (SES measures)
+```{r echo=FALSE, include=FALSE}
+# zso_bc
+intmodel_socialorigins_z_estimates_SES = 
+  pmap_dfr(list(dataset_intmodel_socialoriginsdiff_combo_list_SES$BAmeasure,
+                dataset_intmodel_socialoriginsdiff_combo_list_SES$SESmeasure, 
+                dataset_intmodel_socialoriginsdiff_combo_list_SES$df), model4_socialorigins_z_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 24),
+    SES_measure = rep(c("zwlth13", "dz13_bc", "rz13_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 4),
+    data = rep(c("BA_subsample", "DNAm_subsample", "BA_subsample_middle", "DNAm_subsample_middle"), each = 48),
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_BA_subsample_middle, CI_BA_subsample_middle, p.value_BA_subsample_middle,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         estimate_DNAm_subsample_middle, CI_DNAm_subsample_middle, p.value_DNAm_subsample_middle,
+         )
+
+# pctso_bc
+
+intmodel_socialorigins_pct_estimates_SES = 
+  pmap_dfr(list(dataset_intmodel_socialoriginsdiff_combo_list_SES$BAmeasure,
+                dataset_intmodel_socialoriginsdiff_combo_list_SES$SESmeasure, 
+                dataset_intmodel_socialoriginsdiff_combo_list_SES$df), model4_socialorigins_pct_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "horvathadv_sd", "hannumadv_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), 24),
+    SES_measure = rep(c("zwlth13", "dz13_bc", "rz13_bc", "pctwlth13", "dpct13_bc", "rpct13_bc"), each = 8, 4),
+    data = rep(c("BA_subsample", "DNAm_subsample", "BA_subsample_middle", "DNAm_subsample_middle"), each = 48),
+    ) %>%
+  select(SES_measure, bioage_measure, data, estimate, CI, p.value) %>%
+  pivot_wider(names_from = data, values_from = c(estimate, CI, p.value)) %>%
+  select(SES_measure, bioage_measure,
+         estimate_BA_subsample, CI_BA_subsample, p.value_BA_subsample,
+         estimate_BA_subsample_middle, CI_BA_subsample_middle, p.value_BA_subsample_middle,
+         estimate_DNAm_subsample, CI_DNAm_subsample, p.value_DNAm_subsample,
+         estimate_DNAm_subsample_middle, CI_DNAm_subsample_middle, p.value_DNAm_subsample_middle,
+         )
+```
+
+```{r echo=FALSE}
+intmodel_socialorigins_z_estimates_SES %>%
+  knitr::kable(caption="z")
+
+intmodel_socialorigins_pct_estimates_SES %>%
+  knitr::kable(caption="pct")
+```
+
+## Table 5: Analysis by social origins (stratified analysis by quartile)
+```{r echo=FALSE}
+# Data preparation
+BA_subsample =
+  BA_subsample %>%
+  mutate(pctso_tertile = ntile(pctso_bc, 3))
+
+DNAm_subsample =
+  DNAm_subsample %>%
+  mutate(pctso_tertile = ntile(pctso_bc, 3))
+
+# table5_t1_lm =
+#   lm(grimageadv_sd ~ 
+#        rpct13_bc + age + agesquared + ragender + pctso_bc + age:ragender + agesquared:ragender + raracem + hispanic + pctso_bc:rpct13_bc + ragender:raracem + ragender:hispanic, data = subset(DNAm_subsample, pctso_tertile == "3"))%>%
+#   broom::tidy() %>%
+#   filter(term == "rpct13_bc" | term == "rpct13_bc:pctso_bc") %>%
+#   mutate(quartile = 1)
+# 
+# table5_t2_lm =
+#   lm(grimageadv_sd ~ 
+#        rpct13_bc + age + agesquared + ragender + pctso_bc + age:ragender + agesquared:ragender + raracem + hispanic + pctso_bc:rpct13_bc + ragender:raracem + ragender:hispanic, data = subset(DNAm_subsample, pctso_tertile == "2"))%>%
+#   broom::tidy() %>%
+#   filter(term == "rpct13_bc" | term == "rpct13_bc:pctso_bc") %>%
+#   mutate(quartile = 2)
+# 
+# table5_t3_lm =
+#   lm(grimageadv_sd ~ 
+#        rpct13_bc + age + agesquared + ragender + pctso_bc + age:ragender + agesquared:ragender + raracem + hispanic + pctso_bc:rpct13_bc + ragender:raracem + ragender:hispanic, data = subset(DNAm_subsample, pctso_tertile == "1"))%>%
+#   broom::tidy() %>%
+#   filter(term == "rpct13_bc" | term == "rpct13_bc:pctso_bc") %>%
+#   mutate(quartile = 3)
+# 
+# supp_table_co_strat =
+#   rbind(table5_t1_lm, table5_t2_lm, table5_t3_lm) %>%
+#   select(-statistic) %>%
+#   mutate(lowerCI = format(round(estimate - 1.96*std.error, 2), nsmall = 2),
+#          upperCI = format(round(estimate + 1.96*std.error, 2), nsmall = 2)
+#          ) %>%
+#   select(quartile, term, estimate, lowerCI, upperCI, p.value) %>%
+#   mutate(CI = paste("(", lowerCI, ",", upperCI,")", sep = "")) %>%
+#   select(-lowerCI, -upperCI) %>%
+#   pivot_wider(values_from = c(estimate, CI, p.value), names_from = term) %>%
+#   select(quartile, ends_with("_rpct13_bc"), ends_with("pctso_bc"))
+# 
+# supp_table_co_strat %>%
+#   knitr::kable()
+```
+
+# Additional Analyses
+
+## Figure 1: Effect-sizes of social origins, attainments, and mobility on biological aging
+
+Overall
+```{r echo=FALSE}
+ES_figures_df =
+  coremodel_SES_estimates %>%
+  filter(scale == "z") %>%
+  pivot_longer(cols = c("estimate_BA_subsample", "estimate_DNAm_subsample", "CI_BA_subsample", "CI_DNAm_subsample", "p.value_BA_subsample", "p.value_DNAm_subsample"), names_to = "measure", values_to = "value") %>%
+  separate(measure, into = c("measure", "sample1", "sample2"), sep = "_") %>%
+  mutate(sample = paste(sample1, sample2, sep = "_")) %>%
+  select(-sample1, -sample2) %>%
+  pivot_wider(names_from = "measure", values_from = "value") %>%
+  filter((sample %in% c("BA_subsample") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+           sample %in% c("DNAm_subsample") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+  mutate(bioage_measure = ifelse(bioage_measure == "levinephenoageadv_sd", "PhenoAge",
+                          ifelse(bioage_measure == "kdma_sd", "KDM Biological Age",
+                          ifelse(bioage_measure == "hdlog_sd", "Homeostatic Dysregulation",
+                          ifelse(bioage_measure == "levinednamadv_sd", "PhenoAge Clock",
+                          ifelse(bioage_measure == "grimageadv_sd", "GrimAge Clock",
+                          ifelse(bioage_measure == "poa_sd", "DunedinPoAm Pace of Aging", 666))))))) %>%
+  mutate(clocktype =
+           ifelse(bioage_measure == "PhenoAge" | bioage_measure == "KDM Biological Age" | bioage_measure == "Homeostatic Dysregulation", "biomarker",
+           ifelse(bioage_measure == "PhenoAge Clock" | bioage_measure == "GrimAge Clock", "clock", "poa"))
+         ) %>%
+  separate(CI, into = c("lowerCI", "upperCI"), sep = ",") %>%
+  mutate(lowerCI = as.numeric(parse_number(lowerCI)),
+         upperCI = as.numeric(parse_number(upperCI))
+         ) %>%
+  mutate(estimate = abs(as.numeric(estimate)),
+         lowerCI = abs(lowerCI),
+         upperCI = abs(upperCI)) %>%
+  select(-scale, -p.value)
+
+#Social origins
+ES_df_so =
+  ES_figures_df %>%
+  filter(SES_measuretype == "childhoodSES") %>%
+  select(-SES_measuretype)
+
+ES_figure_so =
+  ES_df_so %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = bioage_measure, y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.6) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  facet_grid(~clocktype, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank()) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Origins (z-score)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#Adult wealth
+ES_df_wlth =
+  ES_figures_df %>%
+  filter(SES_measuretype == "adultwlth") %>%
+  select(-SES_measuretype)
+
+ES_figure_wlth =
+  ES_df_wlth %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = bioage_measure, y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.6) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  facet_grid(~clocktype, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank()) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Midlife wealth (z-score)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#Delta mobility
+ES_df_deltamob =
+  ES_figures_df %>%
+  filter(SES_measuretype == "deltamobility") %>%
+  select(-SES_measuretype)
+
+ES_figure_deltamob =
+  ES_df_deltamob %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = bioage_measure, y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.6) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  facet_grid(~clocktype, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank()) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Mobility (delta method, z-score)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#Residualized-change mobility
+ES_df_residmob =
+  ES_figures_df %>%
+  filter(SES_measuretype == "residmobility") %>%
+  select(-SES_measuretype)
+
+ES_figure_residmob =
+  ES_df_residmob %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = bioage_measure, y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.6) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  facet_grid(~clocktype, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank()) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Mobility (residualized-change method, z-score)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ES_figure_so + ES_figure_wlth + ES_figure_deltamob + ES_figure_residmob + plot_layout(ncol = 1)
+```
+
+Second version of plot
+```{r echo=FALSE}
+ES_figure_so_v2 =
+  ES_df_so %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = reorder(bioage_measure, desc(bioage_measure)), y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.8) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank(), text = element_text(size=14)) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Origins") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip()
+
+
+ES_figure_wlth_v2 =
+  ES_df_wlth %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = reorder(bioage_measure, desc(bioage_measure)), y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.8) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank(), axis.text.y = element_blank(), text = element_text(size=14)) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Life-course attainment (wealth)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip()
+
+
+ES_figure_deltamob_v2 =
+  ES_df_deltamob %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = reorder(bioage_measure, desc(bioage_measure)), y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.8) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank(), axis.text.y = element_blank(), text = element_text(size=14)) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Mobility\n(difference-score method)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip()
+
+
+ES_figure_residmob_v2 =
+  ES_df_residmob %>%
+  mutate(bioage_measure = factor(bioage_measure, levels = c("PhenoAge", "KDM Biological Age", "Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging"))) %>%
+  ggplot(aes(x = reorder(bioage_measure, desc(bioage_measure)), y = estimate, fill = clocktype)) +
+  scale_fill_manual(values = c("firebrick3", 
+                             "steelblue1", 
+                             "turquoise")) +
+  geom_bar(stat = "identity", position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.8) +
+  geom_errorbar(aes(ymin = upperCI, ymax = lowerCI), position = position_dodge2(padding = 0.05, preserve = "single"), width = 0.3) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, vjust = 0.8, hjust = 0.8),
+        panel.spacing = unit(1.5, "lines"), strip.text.x = element_blank(), axis.text.y = element_blank(), text = element_text(size=14)) +
+  xlab(NULL) +
+  ylab(NULL) +
+  ylim(0,0.3) +
+  ylab("Pearson's r") +
+  ggtitle("Social Mobility\n(residualized-change method)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip()
+  
+
+
+ES_figure_so_v2 + ES_figure_wlth_v2 + ES_figure_deltamob_v2 + ES_figure_residmob_v2 + plot_layout(nrow = 1)
+
+
+```
+
+
+## Figure 2: Predicted effects of social mobility (delta and residualized-change) on biological aging
+
+Input lists
+```{r echo=FALSE}
+# Input lists: samples (2: biomarker and DNAm), biological-age advancement measures (8 measures, standardized), 2 measures of SES (z-score Delta social mobility, z-score residualized social mobility))
+
+## Sample
+fig_predict_samples = list(BA_subsample = BA_subsample, DNAm_subsample = DNAm_subsample)
+## BA measures
+fig_predict_BAmeasures = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+## Outcome measures
+fig_predict_SESmeasures = list(dz13_bc = "dz13_bc", rz13_bc = "rz13_bc")
+
+# Combinations
+fig_predict_combo_list = 
+  list(BAmeasure = fig_predict_BAmeasures, SESmeasure = fig_predict_SESmeasures, df = fig_predict_samples)
+dataset_fig_predict_combo_list = 
+  cross_df(fig_predict_combo_list)
+
+# function foundation example
+# lm(levinephenoageadv_sd ~ pctso_bc + age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = BA_subsample) %>%
+#   broom::tidy() %>%
+#   filter(term == "pctso_bc" | term == "(Intercept)") %>%
+#   select(term, estimate)
+
+# Summary numbers
+
+# Function
+fig_predict_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender, data = df) %>%
+  broom::tidy() %>%
+  select(term, estimate)
+
+  }
+
+# use cases
+## fig_predict_f(BAmeasure = "levinephenoageadv_sd", "dz13_bc", df = DNAm_subsample)
+## fig_predict_f(BAmeasure = "levinephenoageadv_sd", "rz13_bc", df = BA_subsample)
+
+# Applying function
+fig_predict_estimates = 
+  pmap_dfr(list(dataset_fig_predict_combo_list$BAmeasure, dataset_fig_predict_combo_list$SESmeasure, dataset_fig_predict_combo_list$df), fig_predict_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), each = 10, 4),
+    SES_measure = rep(c("dz13_bc", "rz13_bc"), each = 60, 2),
+    data = rep(c("BA_subsample", "DNAm_subsample"), each = 120),
+    SES_measuretype = ifelse(SES_measure %in% c("dz13_bc", "dpct13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc", "rpct13_bc"), "residmobility", 666))
+    ) %>%
+  select(SES_measuretype, bioage_measure, data, term, estimate) %>%
+  filter((data %in% c("BA_subsample") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+         data %in% c("DNAm_subsample") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(predint = 
+           ifelse(data == "BA_subsample",
+              `(Intercept)` + (68.5973*age) + (4810.038*agesquared) + (0.5901675*`ragender2.female`) + (0.17298757*`raracem2.black/african american`) + (0.08687196*`raracem3.other`) + (0.1466234*hispanic) + (40.4839*`age:ragender2.female`) + (2838.728*`agesquared:ragender2.female`), 
+            ifelse(data == "DNAm_subsample", 
+              `(Intercept)` + (69.53747*age) + (4927.839*agesquared) + (0.584004*`ragender2.female`) + (0.16574447*`raracem2.black/african american`) + (0.07922535*`raracem3.other`) + (0.13833*hispanic) + (40.4839*`age:ragender2.female`) + (2838.728*`agesquared:ragender2.female`), 
+                  666)),
+        predslope = `pull(df, SESmeasure)`
+           ) %>%
+  select(SES_measuretype, bioage_measure, data, predint, predslope)
+
+# Average values- VBS subsample
+## mean(BA_subsample$age)  = 68.5973
+## mean(BA_subsample$agesquared) = 4810.038
+## prop.table(table(BA_subsample$ragender)) prop.female = 0.5901675
+## prop.table(table(BA_subsample$raracem)) race (Black) = 0.17298757
+## prop.table(table(BA_subsample$raracem)) race (other) = 0.08687196
+## prop.table(table(BA_subsample$hispanic)) hispanicity = 0.1466234
+## age*gender = 40.4839
+## age^2*ragender = 2838.728
+
+# Average values- DNAm subsample
+## mean(DNAm_subsample$age)  = 69.53747
+## mean(DNAm_subsample$agesquared) = 4927.839
+## prop.table(table(DNAm_subsample$ragender)) prop.female = 0.584004
+## prop.table(table(DNAm_subsample$raracem)) race (Black) = 0.16574447
+## prop.table(table(DNAm_subsample$raracem)) race (other) = 0.07922535
+## prop.table(table(DNAm_subsample$hispanic)) hispanicity = 0.13833
+## age*gender = 40.61016
+## age^2*ragender = 2877.878
+
+# # Creating figure- delta mobility
+# ggplot() +
+#   geom_point(data = DNAm_subsample, aes(x = dz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0) +
+#   geom_abline(aes(slope = -0.0248, intercept = 0.000482, color = "PhenoAge Clock"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0516, intercept = -0.0404, color = "Homeostatic Dysregulation"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0532, intercept = -0.0556, color = "KDM Biological Age"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0724, intercept = 0.00557, color = "DunedinPoAm Pace of Aging"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0787, intercept = 0.00503, color = "PhenoAge"), size = 2) +
+#   geom_abline(aes(slope = -0.0787 , intercept = 0.00497, color = "GrimAge Clock"), size = 1.5) +
+#   theme_minimal() +
+#   scale_colour_manual(values=c("PhenoAge"="#de2d26",
+#                                "KDM Biological Age"="#fb6a4a",
+#                                "Homeostatic Dysregulation"="#fcae91",
+#                                "PhenoAge Clock" = "darkorchid4",
+#                                "GrimAge Clock" = "dodgerblue4",
+#                                "DunedinPoAm Pace of Aging" = "#7bccc4"),
+#                       breaks=c("PhenoAge","KDM Biological Age","Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging")
+#                       ) +
+#   labs(color = "Biological-Age Measure") +
+#   xlim(-2,2) +
+#   ylim(-0.5,0.5) +
+#   xlab("Social Mobility (Delta Method)") +
+#   ylab("Biological-Age Advancement (SD)")
+
+# Creating figure- residualized-change mobility
+resid_mobility_fig_forlegend =
+  ggplot() +
+  geom_point(data = DNAm_subsample, aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0) +
+  geom_abline(aes(slope = -0.211, intercept = 0.0195, color = "PhenoAge"), size = 1.5) +
+  geom_abline(aes(slope = -0.146, intercept = -0.0454, color = "KDM Biological Age"), size = 1.5) +
+  geom_abline(aes(slope = -0.149, intercept = -0.0297, color = "Homeostatic Dysregulation"), size = 1.5) +
+  geom_abline(aes(slope = -0.0776, intercept = 0.00556, color = "PhenoAge Clock"), size = 1.5) +
+  geom_abline(aes(slope = -0.227 , intercept = 0.0194, color = "GrimAge Clock"), size = 1.5) +
+  geom_abline(aes(slope = -0.175, intercept = 0.0159, color = "DunedinPoAm Pace of Aging"), size = 1.5) +
+  theme_minimal() +
+  scale_colour_manual(values=c("PhenoAge"="#de2d26", 
+                               "KDM Biological Age"="#fb6a4a", 
+                               "Homeostatic Dysregulation"="#fcae91", 
+                               "PhenoAge Clock" = "darkorchid4",
+                               "GrimAge Clock" = "dodgerblue4",
+                               "DunedinPoAm Pace of Aging" = "#7bccc4"),
+                      breaks=c("PhenoAge","KDM Biological Age","Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging")
+                      ) +
+  labs(color = "Biological-Age Measure") +
+  xlim(-2,2) +
+  ylim(-0.75,0.75) +
+  xlab("Social Mobility (Residualized-change mobility)") +
+  ylab("Biological Aging Z-score")
+
+resid_mobility_fig =
+  ggplot() +
+  geom_hline(yintercept = 0, color = "lightgrey", size = 0.25) +
+  geom_vline(xintercept = 0, color = "lightgrey", size = 0.25) +
+  geom_point(data = DNAm_subsample, aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0) +
+  geom_abline(aes(slope = -0.211, intercept = 0.0195, color = "PhenoAge"), size = 1.5) +
+  geom_abline(aes(slope = -0.146, intercept = -0.0454, color = "KDM Biological Age"), size = 1.5) +
+  geom_abline(aes(slope = -0.149, intercept = -0.0297, color = "Homeostatic Dysregulation"), size = 1.5) +
+  geom_abline(aes(slope = -0.0776, intercept = 0.00556, color = "PhenoAge Clock"), size = 1.5) +
+  geom_abline(aes(slope = -0.227 , intercept = 0.0194, color = "GrimAge Clock"), size = 1.5) +
+  geom_abline(aes(slope = -0.175, intercept = 0.0159, color = "DunedinPoAm Pace of Aging"), size = 1.5) +
+  theme_minimal() +
+  scale_colour_manual(values=c("PhenoAge"="#de2d26", 
+                               "KDM Biological Age"="#fb6a4a", 
+                               "Homeostatic Dysregulation"="#fcae91", 
+                               "PhenoAge Clock" = "steelblue",
+                               "GrimAge Clock" = "dodgerblue4",
+                               "DunedinPoAm Pace of Aging" = "#7bccc4"),
+                      breaks=c("PhenoAge","KDM Biological Age","Homeostatic Dysregulation", "PhenoAge Clock", "GrimAge Clock", "DunedinPoAm Pace of Aging")
+                      ) +
+  labs(color = "Biological Aging \nMeasure") +
+  xlim(-2,2) +
+  ylim(-0.75,0.75) +
+  xlab("Social Mobility (Residualized-change Z-score)") +
+  ylab("Biological Aging Z-score") +
+  theme(legend.position = c(0.75,0.8),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+
+rz13_dist = 
+  ggplot() +
+  geom_histogram(data = BA_subsample, aes(x = rz13_bc, y = ..count..), color = "tomato", fill = "tomato", alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = rz13_bc, y = ..count..), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  xlab(NULL) +
+  ylab("Sample Size") +
+  xlim(-2,2) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+
+#distribution plot for legend
+rz13_dist_forlegend = 
+  ggplot() +
+  geom_histogram(data = BA_subsample, aes(x = rz13_bc, y = ..count.., color = "BA_subsample", fill = "BA_subsample"), alpha = 0.2, bins = 30) +
+  geom_histogram(data = DNAm_subsample, aes(x = rz13_bc, y = ..count.., color = "DNAm_subsample", fill = "DNAm_subsample"), alpha = 0.2, bins = 30) +
+  theme_minimal() +
+  xlab(NULL) +
+  ylab("Frequency") +
+  xlim(-2,2) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank()) +
+  scale_colour_manual(name = "Sample",
+                      labels = c("VBS subsample (n=9255)", "VBS-DNAm subsample (n=3976)"),
+                      values = c("tomato", "dodgerblue")) +   
+  scale_fill_manual(name = "Sample",
+                      labels = c("VBS subsample (n=9255)", "VBS-DNAm subsample (n=3976)"),
+                      values = c("tomato", "dodgerblue"))
+
+rz13_dist + plot_spacer() + resid_mobility_fig +
+  plot_layout(
+    ncol = 2, 
+    nrow = 2, 
+    heights = c(1, 4)
+  ) 
+
+```
+
+## Figure 3: Race-stratified predicted effects of social mobility (residualized-change z-score) on biological aging
+
+```{r echo=FALSE}
+## Sample
+fig_predict_samples_race = list(BA_subsample_white = BA_subsample_white, DNAm_subsample_white = DNAm_subsample_white, BA_subsample_black = BA_subsample_black, DNAm_subsample_black = DNAm_subsample_black)
+## BA measures
+fig_predict_BAmeasures_race = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+## Outcome measures
+fig_predict_SESmeasures_race = list(dz13_bc = "dz13_bc", rz13_bc = "rz13_bc")
+
+# Combinations
+fig_predict_combo_list_race = 
+  list(BAmeasure = fig_predict_BAmeasures_race, SESmeasure = fig_predict_SESmeasures_race, df = fig_predict_samples_race)
+dataset_fig_predict_combo_list_race = 
+  cross_df(fig_predict_combo_list_race)
+
+# function foundation example
+lm(levinephenoageadv_sd ~ pctso_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, data = BA_subsample_white) %>%
+  broom::tidy() %>%
+  select(term, estimate)
+
+# Summary numbers
+
+# Function
+fig_predict_race_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + ragender + age:ragender + agesquared:ragender, data = df) %>%
+  broom::tidy() %>%
+  select(term, estimate)
+
+  }
+
+# use cases
+## fig_predict_race_f(BAmeasure = "levinephenoageadv_sd", "dz13_bc", df = DNAm_subsample_black)
+## fig_predict_race_f(BAmeasure = "levinephenoageadv_sd", "rz13_bc", df = BA_subsample_white)
+
+# Applying function
+fig_predict_estimates_race = 
+  pmap_dfr(list(dataset_fig_predict_combo_list_race$BAmeasure, dataset_fig_predict_combo_list_race$SESmeasure, dataset_fig_predict_combo_list_race$df), fig_predict_race_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), each = 7, 8),
+    SES_measure = rep(c("dz13_bc", "rz13_bc"), each = 42, 4),
+    data = rep(c("BA_subsample_white", "DNAm_subsample_white", "BA_subsample_black", "DNAm_subsample_black"), each = 84),
+    SES_measuretype = ifelse(SES_measure %in% c("dz13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc"), "residmobility", 666))
+    ) %>%
+  select(SES_measuretype, bioage_measure, data, term, estimate) %>%
+  filter((data %in% c("BA_subsample_white", "BA_subsample_black") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+         data %in% c("DNAm_subsample_white", "DNAm_subsample_black") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(predint = 
+# Average values- VBS white subsample
+## mean(BA_subsample_white$age)  = 70.30692
+## mean(BA_subsample_white$agesquared) = 5047.916
+## prop.table(table(BA_subsample$ragender)) prop.female = 0.5901675
+## age*gender = 41.49286
+## age^2*ragender = 2838.728
+           ifelse(data == "BA_subsample_white",
+              `(Intercept)` + (70.30692*age) + (5047.916*agesquared) + (0.5901675*`ragender2.female`)
+              + (41.49286*`age:ragender2.female`) + (2979.116*`agesquared:ragender2.female`), 
+# Average values- DNAm white subsample
+## mean(DNAm_subsample_white$age) = 71.13411
+## mean(DNAm_subsample_white$agesquared) = 5153.683
+## prop.table(table(DNAm_subsample_white$ragender)) prop.female = 0.5631104
+## age*gender = 40.05636
+## age^2*ragender = 2902.092
+            ifelse(data == "DNAm_subsample_white", 
+              `(Intercept)` + (71.13411*age) + (5153.683*agesquared) + (0.5631104*`ragender2.female`) + 
+                (40.05636*`age:ragender2.female`) + (2902.092*`agesquared:ragender2.female`), 
+# Average values- VBS Black subsample
+## mean(BA_subsample_black$age)  = 65.95391
+## mean(BA_subsample_black$agesquared) = 4434.848
+## prop.table(table(BA_subsample_black$ragender)) prop.female = 0.6357234
+## age*gender = 41.92844
+## age^2*ragender = 2819.337
+              ifelse(data == "BA_subsample_black",
+              `(Intercept)` + (65.95391*age) + (4434.848*agesquared) + (0.6357234*`ragender2.female`)
+              + (41.92844*`age:ragender2.female`) + (2819.337*`agesquared:ragender2.female`), 
+# Average values- DNAm Black subsample
+## mean(DNAm_subsample_black$age) = 66.61586
+## mean(DNAm_subsample_black$agesquared) = 4511.39
+## prop.table(table(DNAm_subsample_black$ragender)) prop.female = 0.6562986
+## age*gender = 18.83138
+## age^2*ragender = 2960.819
+              ifelse(data == "DNAm_subsample_black",
+              `(Intercept)` + (66.61586*age) + (4511.39*agesquared) + (0.6562986*`ragender2.female`)
+              + (43.7199*`age:ragender2.female`) + (2960.819*`agesquared:ragender2.female`), 
+                  666)))),
+        predslope = `pull(df, SESmeasure)`
+           ) %>%
+  select(SES_measuretype, bioage_measure, data, predint, predslope) %>%
+  filter(bioage_measure %in% c("levinephenoageadv_sd", "grimageadv_sd", "poa_sd") & SES_measuretype == "residmobility")
+
+####### Panel A- residualized-change mobility, PhenoAge
+fig_predict_phenoage_race =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+  geom_point(data = subset(BA_subsample, raracem == "2.black/african american"), aes(x = rz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+  geom_abline(aes(slope = -0.204, intercept = 0.167, color = "Black"), size = 1.5) +
+  geom_abline(aes(slope = -0.228, intercept = 0.00445, color = "White"), size = 1.5) +
+  scale_colour_manual(values=c("White"="orangered3", 
+                               "Black"="steelblue4"),
+                      breaks=c("Black", "White")
+                      ) +
+  labs(color = "Race", title="Blood-Chemistry PhenoAge Advancement") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+####### Panel B- residualized-change mobility, GrimAge
+fig_predict_grimage_race =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+  geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+  geom_abline(aes(slope =  -0.247, intercept = 0.175, color = "Black"), size = 1.5) +
+  geom_abline(aes(slope = -0.237, intercept = 0.0138, color = "White"), size = 1.5) +
+  scale_colour_manual(values=c("White"="orangered3", 
+                               "Black"="steelblue4"),
+                      breaks=c("Black", "White")
+                      ) +
+  labs(color = "Race", title="DNAm GrimAge Clock Residual") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+####### Panel C- residualized-change mobility, DunedinPoAm
+fig_predict_poa_race =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = poa_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+  geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = rz13_bc, y = poa_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+  geom_abline(aes(slope = -0.213, intercept = 0.184, color = "Black"), size = 1.5) +
+  geom_abline(aes(slope = -0.179, intercept = -0.0129, color = "White"), size = 1.5) +
+  scale_colour_manual(values=c("White"="orangered3", 
+                               "Black"="steelblue4"),
+                      breaks=c("Black", "White")
+                      ) +
+  labs(color = "Race", title="DNAm DunedinPoAm Pace of Aging") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+fig_predict_phenoage_race + fig_predict_grimage_race + plot_spacer() + fig_predict_poa_race +
+  plot_layout(
+    ncol = 2, 
+    nrow = 2
+  ) 
+
+fig_predict_phenoage_race + fig_predict_grimage_race + fig_predict_poa_race
+```
+
+
+## Figure 3 Version 2: using delta mobility
+```{r echo=FALSE}
+# fig_predict_estimates_race = 
+#   pmap_dfr(list(dataset_fig_predict_combo_list_race$BAmeasure, dataset_fig_predict_combo_list_race$SESmeasure, dataset_fig_predict_combo_list_race$df), fig_predict_race_f) %>%
+#   mutate(
+#     bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), each = 7, 8),
+#     SES_measure = rep(c("dz13_bc", "rz13_bc"), each = 42, 4),
+#     data = rep(c("BA_subsample_white", "DNAm_subsample_white", "BA_subsample_black", "DNAm_subsample_black"), each = 84),
+#     SES_measuretype = ifelse(SES_measure %in% c("dz13_bc"), "deltamobility",
+#                       ifelse(SES_measure %in% c("rz13_bc"), "residmobility", 666))
+#     ) %>%
+#   select(SES_measuretype, bioage_measure, data, term, estimate) %>%
+#   filter((data %in% c("BA_subsample_white", "BA_subsample_black") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+#          data %in% c("DNAm_subsample_white", "DNAm_subsample_black") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+#   pivot_wider(names_from = "term", values_from = "estimate") %>%
+#   mutate(predint = 
+# # Average values- VBS white subsample
+# ## mean(BA_subsample_white$age)  = 70.30692
+# ## mean(BA_subsample_white$agesquared) = 5047.916
+# ## prop.table(table(BA_subsample$ragender)) prop.female = 0.5901675
+# ## age*gender = 41.49286
+# ## age^2*ragender = 2838.728
+#            ifelse(data == "BA_subsample_white",
+#               `(Intercept)` + (70.30692*age) + (5047.916*agesquared) + (0.5901675*`ragender2.female`)
+#               + (41.49286*`age:ragender2.female`) + (2979.116*`agesquared:ragender2.female`), 
+# # Average values- DNAm white subsample
+# ## mean(DNAm_subsample_white$age) = 71.13411
+# ## mean(DNAm_subsample_white$agesquared) = 5153.683
+# ## prop.table(table(DNAm_subsample_white$ragender)) prop.female = 0.5631104
+# ## age*gender = 40.05636
+# ## age^2*ragender = 2902.092
+#             ifelse(data == "DNAm_subsample_white", 
+#               `(Intercept)` + (71.13411*age) + (5153.683*agesquared) + (0.5631104*`ragender2.female`) + 
+#                 (40.05636*`age:ragender2.female`) + (2902.092*`agesquared:ragender2.female`), 
+# # Average values- VBS Black subsample
+# ## mean(BA_subsample_black$age)  = 65.95391
+# ## mean(BA_subsample_black$agesquared) = 4434.848
+# ## prop.table(table(BA_subsample_black$ragender)) prop.female = 0.6357234
+# ## age*gender = 41.92844
+# ## age^2*ragender = 2819.337
+#               ifelse(data == "BA_subsample_black",
+#               `(Intercept)` + (65.95391*age) + (4434.848*agesquared) + (0.6357234*`ragender2.female`)
+#               + (41.92844*`age:ragender2.female`) + (2819.337*`agesquared:ragender2.female`), 
+# # Average values- DNAm Black subsample
+# ## mean(DNAm_subsample_black$age) = 66.61586
+# ## mean(DNAm_subsample_black$agesquared) = 4511.39
+# ## prop.table(table(DNAm_subsample_black$ragender)) prop.female = 0.6562986
+# ## age*gender = 18.83138
+# ## age^2*ragender = 2960.819
+#               ifelse(data == "DNAm_subsample_black",
+#               `(Intercept)` + (66.61586*age) + (4511.39*agesquared) + (0.6562986*`ragender2.female`)
+#               + (43.7199*`age:ragender2.female`) + (2960.819*`agesquared:ragender2.female`), 
+#                   666)))),
+#         predslope = `pull(df, SESmeasure)`
+#            ) %>%
+#   select(SES_measuretype, bioage_measure, data, predint, predslope) %>%
+#   filter(bioage_measure %in% c("levinephenoageadv_sd", "grimageadv_sd", "poa_sd") & SES_measuretype == "deltamobility")
+# 
+# ####### Panel A- residualized-change mobility, PhenoAge
+# fig_predict_phenoage_race =
+#   ggplot() +
+#   geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = dz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+#   geom_point(data = subset(BA_subsample, raracem == "2.black/african american"), aes(x = dz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+#   geom_abline(aes(slope = -0.106, intercept = 0.233, color = "Black"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0726, intercept = -0.0557, color = "White"), size = 1.5) +
+#   scale_colour_manual(values=c("White"="orangered3", 
+#                                "Black"="steelblue4"),
+#                       breaks=c("Black", "White")
+#                       ) +
+#   labs(color = "Race", title="PhenoAge Advancement (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# ####### Panel B- residualized-change mobility, GrimAge
+# fig_predict_grimage_race =
+#   ggplot() +
+#   geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = dz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+#   geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = dz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+#   geom_abline(aes(slope =  -0.102, intercept = 0.261, color = "Black"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0685, intercept = -0.0463, color = "White"), size = 1.5) +
+#   scale_colour_manual(values=c("White"="orangered3", 
+#                                "Black"="steelblue4"),
+#                       breaks=c("Black", "White")
+#                       ) +
+#   labs(color = "Race", title="GrimAge Clock Advancement (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# ####### Panel C- residualized-change mobility, DunedinPoAm
+# fig_predict_poa_race =
+#   ggplot() +
+#   geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = dz13_bc, y = poa_sd), size = 0.75, alpha = 0.2, color = "orangered3") +
+#   geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = dz13_bc, y = poa_sd), size = 0.75, alpha = 0.4, color = "steelblue4") +
+#   geom_abline(aes(slope = -0.0890, intercept = 0.258, color = "Black"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0656, intercept = -0.0565, color = "White"), size = 1.5) +
+#   scale_colour_manual(values=c("White"="orangered3", 
+#                                "Black"="steelblue4"),
+#                       breaks=c("Black", "White")
+#                       ) +
+#   labs(color = "Race", title="DunedinPoAm Pace of Aging (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# fig_predict_phenoage_race + fig_predict_grimage_race + plot_spacer() + fig_predict_poa_race + 
+#   plot_layout(
+#     ncol = 2, 
+#     nrow = 2
+#   ) 
+# 
+# fig_predict_phenoage_race + fig_predict_grimage_race + fig_predict_poa_race
+```
+
+
+## Figure 4: Sex-stratified predicted effects of social mobility (residualized-change percentile-rank) on biological aging
+
+```{r echo=FALSE}
+BA_subsample_men =
+  BA_subsample %>%
+  filter(ragender == "1.male")
+
+BA_subsample_women =
+  BA_subsample %>%
+  filter(ragender == "2.female")
+  
+DNAm_subsample_men =
+  DNAm_subsample %>%
+  filter(ragender == "1.male")
+
+DNAm_subsample_women =
+  DNAm_subsample %>%
+  filter(ragender == "2.female")
+
+## Sample
+fig_predict_samples_sex = list(BA_subsample_men = BA_subsample_men, BA_subsample_women = BA_subsample_women, DNAm_subsample_men = DNAm_subsample_men, DNAm_subsample_women = DNAm_subsample_women)
+## BA measures
+fig_predict_BAmeasures_sex = list(levinephenoageadv_sd = "levinephenoageadv_sd", kdma_sd = "kdma_sd", hdlog_sd = "hdlog_sd", levinednamadv_sd = "levinednamadv_sd", grimageadv_sd = "grimageadv_sd", poa_sd = "poa_sd")
+## Outcome measures
+fig_predict_SESmeasures_sex = list(dz13_bc = "dz13_bc", rz13_bc = "rz13_bc")
+
+# Combinations
+fig_predict_combo_list_sex = 
+  list(BAmeasure = fig_predict_BAmeasures_sex, SESmeasure = fig_predict_SESmeasures_sex, df = fig_predict_samples_sex)
+dataset_fig_predict_combo_list_sex = 
+  cross_df(fig_predict_combo_list_sex)
+
+# function foundation example
+lm(levinephenoageadv_sd ~ pctso_bc + age + agesquared + raracem + hispanic, data = BA_subsample_men) %>%
+  broom::tidy() %>%
+  select(term, estimate)
+
+# Function
+fig_predict_sex_f =
+  function(BAmeasure, SESmeasure, df) {
+
+  lm(pull(df, BAmeasure) ~ 
+       pull(df, SESmeasure) + 
+       age + agesquared + raracem + hispanic, data = df) %>%
+  broom::tidy() %>%
+  select(term, estimate)
+
+  }
+
+# use cases
+## fig_predict_sex_f(BAmeasure = "levinephenoageadv_sd", "dz13_bc", df = DNAm_subsample_men)
+## fig_predict_sex_f(BAmeasure = "levinephenoageadv_sd", "rz13_bc", df = BA_subsample_women)
+
+# Applying function
+fig_predict_estimates_sex = 
+  pmap_dfr(list(dataset_fig_predict_combo_list_sex$BAmeasure, dataset_fig_predict_combo_list_sex$SESmeasure, dataset_fig_predict_combo_list_sex$df), fig_predict_sex_f) %>%
+  mutate(
+    bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), each = 7, 8),
+    SES_measure = rep(c("dz13_bc", "rz13_bc"), each = 42, 4),
+    data = rep(c("BA_subsample_men", "BA_subsample_women", "DNAm_subsample_men", "DNAm_subsample_women"), each = 84),
+    SES_measuretype = ifelse(SES_measure %in% c("dz13_bc"), "deltamobility",
+                      ifelse(SES_measure %in% c("rz13_bc"), "residmobility", 666))
+    ) %>%
+  select(SES_measuretype, bioage_measure, data, term, estimate) %>%
+  filter((data %in% c("BA_subsample_men", "BA_subsample_women") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+         data %in% c("DNAm_subsample_men", "DNAm_subsample_women") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(predint = 
+# Average values- VBS men subsample
+## mean(BA_subsample_men$age)  = 69.21882
+## mean(BA_subsample_men$agesquared) = 4886.78
+## prop.table(table(BA_subsample_men$raracem)) black = 0.15423148
+## prop.table(table(BA_subsample_men$raracem)) other = 0.08990245
+## prop.table(table(BA_subsample_men$hispanic)) hispanicity = 0.1426312
+           ifelse(data == "BA_subsample_men",
+              `(Intercept)` + (69.21882*age) + (4886.78*agesquared) + (0.15423148*`raracem2.black/african american`) + (0.08990245*`raracem3.other`) + (0.1426312*hispanic),
+# Average values- VBS women subsample
+## mean(BA_subsample_women$age)  = 68.16569
+## mean(BA_subsample_women$agesquared) = 4756.745
+## prop.table(table(BA_subsample_women$raracem)) black = 0.18601245
+## prop.table(table(BA_subsample_women$raracem)) other = 0.08476748
+## prop.table(table(BA_subsample_women$hispanic)) hispanicity = 0.1493958
+            ifelse(data == "BA_subsample_women",
+              `(Intercept)` + (68.16569*age) + (4756.745*agesquared) + (0.18601245*`raracem2.black/african american`) + (0.08476748*`raracem3.other`) + (0.1493958*hispanic),
+# Average values- DNAm men subsample
+## mean(DNAm_subsample_men$age)  = 69.95889
+## mean(DNAm_subsample_men$agesquared) = 4983.612
+## prop.table(table(DNAm_subsample_men$raracem)) black = 0.13784764
+## prop.table(table(DNAm_subsample_men$raracem)) other = 0.07920193
+## prop.table(table(DNAm_subsample_men$hispanic)) hispanicity = 0.1348247
+            ifelse(data == "DNAm_subsample_men",
+              `(Intercept)` + (69.95889*age) + (4983.612*agesquared) + (0.13784764*`raracem2.black/african american`) + (0.07920193*`raracem3.other`) + (0.1348247*hispanic),
+# Average values- DNAm women subsample
+## mean(DNAm_subsample_women$age)  = 69.2373
+## mean(DNAm_subsample_women$agesquared) = 4888.112
+## prop.table(table(DNAm_subsample_women$raracem)) black = 0.18561585
+## prop.table(table(DNAm_subsample_women$raracem)) other = 0.07924203
+## prop.table(table(DNAm_subsample_women$hispanic)) hispanicity = 0.1408269
+            ifelse(data == "DNAm_subsample_women",
+              `(Intercept)` + (69.2373*age) + (4888.112*agesquared) + (0.18561585*`raracem2.black/african american`) + (0.07924203*`raracem3.other`) + (0.1408269*hispanic),
+                  666)))),
+        predslope = `pull(df, SESmeasure)`
+           ) %>%
+  select(SES_measuretype, bioage_measure, data, predint, predslope) %>%
+  filter(bioage_measure %in% c("levinephenoageadv_sd", "grimageadv_sd", "poa_sd") & SES_measuretype == "residmobility")
+
+
+####### Panel A- residualized-change mobility, PhenoAge
+fig_predict_phenoage_sex =
+  ggplot() +
+  geom_point(data = subset(BA_subsample_women), aes(x = rz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+  geom_point(data = subset(BA_subsample_men, raracem == "2.black/african american"), aes(x = rz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+  geom_abline(aes(slope = -0.178, intercept = 0.188, color = "Men"), size = 1.5) +
+  geom_abline(aes(slope = -0.229, intercept = -0.0923, color = "Women"), size = 1.5) +
+  scale_colour_manual(values=c("Men"="chocolate1", 
+                               "Women"="darkgreen"),
+                      breaks=c("Men", "Women")
+                      ) +
+  labs(color = "Sex", title="Blood-Chemistry PhenoAge Advancement") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+####### Panel B- residualized-change mobility, GrimAge
+fig_predict_grimage_sex =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample_women), aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+  geom_point(data = subset(DNAm_subsample_men, raracem == "2.black/african american"), aes(x = rz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+  geom_abline(aes(slope =  -0.277, intercept = 0.408, color = "Men"), size = 1.5) +
+  geom_abline(aes(slope = -0.206, intercept = -0.254, color = "Women"), size = 1.5) +
+  scale_colour_manual(values=c("Men"="chocolate1", 
+                               "Women"="darkgreen"),
+                      breaks=c("Men", "Women")
+                      ) +
+  labs(color = "Sex", title="DNAm GrimAge Clock Residual") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+####### Panel C- residualized-change mobility, DunedinPoAm
+fig_predict_poa_sex =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample_women), aes(x = rz13_bc, y = poa_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+  geom_point(data = subset(DNAm_subsample_men, raracem == "2.black/african american"), aes(x = rz13_bc, y = poa_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+  geom_abline(aes(slope = -0.184, intercept = 0.119, color = "Men"), size = 1.5) +
+  geom_abline(aes(slope = -0.179, intercept = -0.05691, color = "Women"), size = 1.5) +
+  scale_colour_manual(values=c("Men"="chocolate1", 
+                               "Women"="darkgreen"),
+                      breaks=c("Men", "Women")
+                      ) +
+  labs(color = "Sex", title="DNAm DunedinPoAm Pace of Aging") +
+  xlab(NULL) +
+  ylab(NULL) +
+  xlim(-3,3) +
+  ylim(-5,5) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+fig_predict_phenoage_sex + fig_predict_grimage_sex + plot_spacer() + fig_predict_poa_sex + 
+  plot_layout(
+    ncol = 2, 
+    nrow = 2
+  ) 
+
+fig_predict_phenoage_sex + fig_predict_grimage_sex + fig_predict_poa_sex
+```
+
+## Figure 4 Version 2 (delta mobility)
+```{r echo=FALSE}
+# # Applying function
+# fig_predict_estimates_sex = 
+#   pmap_dfr(list(dataset_fig_predict_combo_list_sex$BAmeasure, dataset_fig_predict_combo_list_sex$SESmeasure, dataset_fig_predict_combo_list_sex$df), fig_predict_sex_f) %>%
+#   mutate(
+#     bioage_measure = rep(c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd", "levinednamadv_sd", "grimageadv_sd", "poa_sd"), each = 7, 8),
+#     SES_measure = rep(c("dz13_bc", "rz13_bc"), each = 42, 4),
+#     data = rep(c("BA_subsample_men", "BA_subsample_women", "DNAm_subsample_men", "DNAm_subsample_women"), each = 84),
+#     SES_measuretype = ifelse(SES_measure %in% c("dz13_bc"), "deltamobility",
+#                       ifelse(SES_measure %in% c("rz13_bc"), "residmobility", 666))
+#     ) %>%
+#   select(SES_measuretype, bioage_measure, data, term, estimate) %>%
+#   filter((data %in% c("BA_subsample_men", "BA_subsample_women") & bioage_measure %in% c("levinephenoageadv_sd", "kdma_sd", "hdlog_sd")) |
+#          data %in% c("DNAm_subsample_men", "DNAm_subsample_women") & bioage_measure %in% c("levinednamadv_sd", "grimageadv_sd", "poa_sd")) %>%
+#   pivot_wider(names_from = "term", values_from = "estimate") %>%
+#   mutate(predint = 
+# # Average values- VBS men subsample
+# ## mean(BA_subsample_men$age)  = 69.21882
+# ## mean(BA_subsample_men$agesquared) = 4886.78
+# ## prop.table(table(BA_subsample_men$raracem)) black = 0.15423148
+# ## prop.table(table(BA_subsample_men$raracem)) other = 0.08990245
+# ## prop.table(table(BA_subsample_men$hispanic)) hispanicity = 0.1426312
+#            ifelse(data == "BA_subsample_men",
+#               `(Intercept)` + (69.21882*age) + (4886.78*agesquared) + (0.15423148*`raracem2.black/african american`) + (0.08990245*`raracem3.other`) + (0.1426312*hispanic),
+# # Average values- VBS women subsample
+# ## mean(BA_subsample_women$age)  = 68.16569
+# ## mean(BA_subsample_women$agesquared) = 4756.745
+# ## prop.table(table(BA_subsample_women$raracem)) black = 0.18601245
+# ## prop.table(table(BA_subsample_women$raracem)) other = 0.08476748
+# ## prop.table(table(BA_subsample_women$hispanic)) hispanicity = 0.1493958
+#             ifelse(data == "BA_subsample_women",
+#               `(Intercept)` + (68.16569*age) + (4756.745*agesquared) + (0.18601245*`raracem2.black/african american`) + (0.08476748*`raracem3.other`) + (0.1493958*hispanic),
+# # Average values- DNAm men subsample
+# ## mean(DNAm_subsample_men$age)  = 69.95889
+# ## mean(DNAm_subsample_men$agesquared) = 4983.612
+# ## prop.table(table(DNAm_subsample_men$raracem)) black = 0.13784764
+# ## prop.table(table(DNAm_subsample_men$raracem)) other = 0.07920193
+# ## prop.table(table(DNAm_subsample_men$hispanic)) hispanicity = 0.1348247
+#             ifelse(data == "DNAm_subsample_men",
+#               `(Intercept)` + (69.95889*age) + (4983.612*agesquared) + (0.13784764*`raracem2.black/african american`) + (0.07920193*`raracem3.other`) + (0.1348247*hispanic),
+# # Average values- DNAm women subsample
+# ## mean(DNAm_subsample_women$age)  = 69.2373
+# ## mean(DNAm_subsample_women$agesquared) = 4888.112
+# ## prop.table(table(DNAm_subsample_women$raracem)) black = 0.18561585
+# ## prop.table(table(DNAm_subsample_women$raracem)) other = 0.07924203
+# ## prop.table(table(DNAm_subsample_women$hispanic)) hispanicity = 0.1408269
+#             ifelse(data == "DNAm_subsample_women",
+#               `(Intercept)` + (69.2373*age) + (4888.112*agesquared) + (0.18561585*`raracem2.black/african american`) + (0.07924203*`raracem3.other`) + (0.1408269*hispanic),
+#                   666)))),
+#         predslope = `pull(df, SESmeasure)`
+#            ) %>%
+#   select(SES_measuretype, bioage_measure, data, predint, predslope) %>%
+#   filter(bioage_measure %in% c("levinephenoageadv_sd", "grimageadv_sd", "poa_sd") & SES_measuretype == "deltamobility")
+# 
+# 
+# ####### Panel A- residualized-change mobility, PhenoAge
+# fig_predict_phenoage_sex =
+#   ggplot() +
+#   geom_point(data = subset(BA_subsample_women), aes(x = dz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+#   geom_point(data = subset(BA_subsample_men, raracem == "2.black/african american"), aes(x = dz13_bc, y = levinephenoageadv_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+#   geom_abline(aes(slope = -0.0625, intercept = 0.174, color = "Men"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0899, intercept = -0.106, color = "Women"), size = 1.5) +
+#   scale_colour_manual(values=c("Men"="chocolate1", 
+#                                "Women"="darkgreen"),
+#                       breaks=c("Men", "Women")
+#                       ) +
+#   labs(color = "Sex", title = "PhenoAge Advancement (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# ####### Panel B- residualized-change mobility, GrimAge
+# fig_predict_grimage_sex =
+#   ggplot() +
+#   geom_point(data = subset(DNAm_subsample_women), aes(x = dz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+#   geom_point(data = subset(DNAm_subsample_men, raracem == "2.black/african american"), aes(x = dz13_bc, y = grimageadv_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+#   geom_abline(aes(slope = -0.0993, intercept = 0.389, color = "Men"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0626, intercept = -0.267, color = "Women"), size = 1.5) +
+#   scale_colour_manual(values=c("Men"="chocolate1", 
+#                                "Women"="darkgreen"),
+#                       breaks=c("Men", "Women")
+#                       ) +
+#   labs(color = "Sex", title = "GrimAge Clock Advancement (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# ####### Panel C- residualized-change mobility, DunedinPoAm
+# fig_predict_poa_sex =
+#   ggplot() +
+#   geom_point(data = subset(DNAm_subsample_women), aes(x = dz13_bc, y = poa_sd), size = 0.75, alpha = 0.2, color = "darkgreen") +
+#   geom_point(data = subset(DNAm_subsample_men, raracem == "2.black/african american"), aes(x = dz13_bc, y = poa_sd), size = 0.75, alpha = 0.6, color = "chocolate1") +
+#   geom_abline(aes(slope = -0.0681, intercept = 0.107, color = "Men"), size = 1.5) +
+#   geom_abline(aes(slope = -0.0744, intercept = -0.0669, color = "Women"), size = 1.5) +
+#   scale_colour_manual(values=c("Men"="chocolate1", 
+#                                "Women"="darkgreen"),
+#                       breaks=c("Men", "Women")
+#                       ) +
+#   labs(color = "Sex", title = "DunedinPoAm Pace of Aging (SD)") +
+#   xlab(NULL) +
+#   ylab(NULL) +
+#   theme_minimal() +
+#   theme(legend.position = "none")
+# 
+# fig_predict_phenoage_sex + fig_predict_grimage_sex + plot_spacer() + fig_predict_poa_sex + 
+#   plot_layout(
+#     ncol = 2, 
+#     nrow = 2
+#   ) 
+```
+
+
+## Figure (Supplement): Analysis by social origins (stratified analysis by tertile)
+
+All participants (race-stratified results below)
+
+All participants- PhenoAge
+```{r echo=FALSE}
+fig_t1_lm_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "3")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "2")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "1")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- BA subsample
+## mean(BA_subsample$age) = 68.5973
+## mean(BA_subsample$agesquared) = 4810.038
+## prop.table(table(BA_subsample$ragender)) = 0.5901675
+## age*gender = 40.4839
+## age^2*ragender = 2777.086
+
+fig_quartiles_df_phenoage =
+  rbind(fig_t1_lm_phenoage, fig_t2_lm_phenoage, fig_t3_lm_phenoage) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rz13_bc,
+         pred_int = `(Intercept)` + (68.5973*age) + (4810.038*agesquared) + (0.5901675*`ragender2.female`) + (40.4839*`age:ragender2.female`) + (2777.086*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+BA_subsample =
+  BA_subsample %>%
+  mutate(pctso_tertile = as.factor(pctso_tertile))
+
+pred_levinephenoage_socmob_plot_forlegend =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = levinephenoageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.232, intercept = -0.0784, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.221, intercept = 0.0741, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.265, intercept = 0.0403, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("PhenoAge Advancement Z-score") +
+  ggtitle("Blood-Chemistry PhenoAge") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_levinephenoage_socmob_plot =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = levinephenoageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.232, intercept = -0.0784, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.221, intercept = 0.0741, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.265, intercept = 0.0403, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("PhenoAge Advancement Z-score") +
+  ggtitle("Blood-Chemistry PhenoAge Advancement") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+```
+
+All participants- GrimAge
+```{r echo=FALSE}
+fig_t1_lm_grimage =
+  lm(grimageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "3")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_grimage =
+  lm(grimageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "2")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_grimage =
+  lm(grimageadv_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "1")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- BA subsample
+## mean(BA_subsample$age) = 68.5973
+## mean(BA_subsample$agesquared) = 4810.038
+## prop.table(table(BA_subsample$ragender)) = 0.5901675
+## age*gender = 40.4839
+## age^2*ragender = 2777.086
+
+fig_quartiles_df_grimage =
+  rbind(fig_t1_lm_grimage, fig_t2_lm_grimage, fig_t3_lm_grimage) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rz13_bc,
+         pred_int = `(Intercept)` + (68.5973*age) + (4810.038*agesquared) + (0.5901675*`ragender2.female`) + (40.4839*`age:ragender2.female`) + (2777.086*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+BA_subsample =
+  BA_subsample %>%
+  mutate(pctso_tertile = as.factor(pctso_tertile))
+
+pred_grimage_socmob_plot_forlegend =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = grimageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.247, intercept = -0.119, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.232, intercept = 0.0995, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.273, intercept = -0.0117, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("GrimAge Advancement Z-score") +
+  ggtitle("DNAm GrimAge Clock Residual") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_grimage_socmob_plot =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = grimageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.247, intercept = -0.119, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.232, intercept = 0.0995, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.273, intercept = -0.0117, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("GrimAge Advancement Z-score") +
+  ggtitle("DNAm GrimAge Clock Residual") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+```
+
+All participants- DunedinPoAm
+```{r echo=FALSE}
+fig_t1_lm_poa =
+  lm(poa_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "3")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_poa =
+  lm(poa_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "2")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_poa =
+  lm(poa_sd ~ 
+       rz13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "1")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- BA subsample
+## mean(BA_subsample$age) = 68.5973
+## mean(BA_subsample$agesquared) = 4810.038
+## prop.table(table(BA_subsample$ragender)) = 0.5901675
+## age*gender = 40.4839
+## age^2*ragender = 2777.086
+
+fig_quartiles_df_poa =
+  rbind(fig_t1_lm_poa, fig_t2_lm_poa, fig_t3_lm_poa) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rz13_bc,
+         pred_int = `(Intercept)` + (68.5973*age) + (4810.038*agesquared) + (0.5901675*`ragender2.female`) + (40.4839*`age:ragender2.female`) + (2777.086*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+BA_subsample =
+  BA_subsample %>%
+  mutate(pctso_tertile = as.factor(pctso_tertile))
+
+pred_poa_socmob_plot_forlegend =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = poa_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.195, intercept = -0.101, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.160, intercept = 0.0880, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.245, intercept = 0.0292, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("DunedinPoAm Pace of Aging Z-score") +
+  ggtitle("DNAm DunedinPoAm Pace of Aging") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_poa_socmob_plot =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rz13_bc, y = poa_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.195, intercept = -0.101, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.160, intercept = 0.0880, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.245, intercept = 0.0292, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      labels=c("1" = "Low", "2"="Middle", "3"="High"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (Residualized-change Z-score)") +
+  ylab("DunedinPoAm Pace of Aging Z-score") +
+  ggtitle("DNAm DunedinPoAm Pace of Aging") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+
+
+
+pred_levinephenoage_socmob_plot + pred_grimage_socmob_plot + plot_spacer() + pred_poa_socmob_plot +
+  plot_layout(
+    ncol = 2, 
+    nrow = 2
+  ) 
+```
+
+Race-stratified results:
+
+PhenoAge
+
+```{r echo=FALSE}
+#White participants
+fig_t1_lm_white_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "3" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_white_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "2" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_white_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "1" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- BA subsample- White
+## mean(BA_subsample_white$age) = 70.30692
+## mean(BA_subsample_white$agesquared) = 5047.916
+## prop.table(table(BA_subsample_white$ragender)) = 0.5772667
+## age*gender = 40.58584
+## age^2*ragender = 2913.994
+
+fig_quartiles_white_df_phenoage =
+  rbind(fig_t1_lm_white_phenoage, fig_t2_lm_white_phenoage, fig_t3_lm_white_phenoage) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (70.30692*age) + (5047.916*agesquared) + (0.5772667*`ragender2.female`) + (40.58584*`age:ragender2.female`) + (2913.994*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+BA_subsample =
+  BA_subsample %>%
+  mutate(pctso_tertile = as.factor(pctso_tertile))
+
+pred_levinephenoage_socmob_plot_white_forlegend =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = levinephenoageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.180, intercept = -0.0669, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.170, intercept = 0.0956, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.204, intercept = 0.0316, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (residualized-change percentile-rank") +
+  ylab("PhenoAge Advancement (SD)") +
+  ggtitle("Predicted PhenoAge Advancement by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_levinephenoage_socmob_plot_white =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = levinephenoageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.180, intercept = -0.0669, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.170, intercept = 0.0956, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.204, intercept = 0.0316, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("PhenoAge Advancement (SD)") +
+  ggtitle("Predicted PhenoAge Advancement by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+
+# Black participants
+fig_t1_lm_black_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "3" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_black_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "2" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_black_phenoage =
+  lm(levinephenoageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(BA_subsample, pctso_tertile == "1" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- BA subsample- Black
+## mean(BA_subsample_black$age) = 65.95391
+## mean(BA_subsample_black$agesquared) = 4434.848
+## prop.table(table(BA_subsample_black$ragender)) = 0.6357234
+## age*gender = 41.92844
+## age^2*ragender = 2819.337
+
+fig_quartiles_black_df =
+  rbind(fig_t1_lm_black_phenoage, fig_t2_lm_black_phenoage, fig_t3_lm_black_phenoage) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (65.95391*age) + (4434.848*agesquared) + (0.6357234*`ragender2.female`) + (41.92844*`age:ragender2.female`) + (2819.337*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+pred_levinephenoage_socmob_plot_black =
+  ggplot() +
+  geom_point(data = subset(BA_subsample, raracem == "2.black/african american"), aes(x = rpct13_bc, y = levinephenoageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.102, intercept = 0.186, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.181, intercept = 0.118, color = "2"), size = 2) +
+  geom_abline(aes(slope = -0.185, intercept = 0.170, color = "3"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="darkgoldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("PhenoAge Advancement (SD)") +
+  ggtitle("Predicted PhenoAge Advancement by social mobility \namong Black participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+grid.arrange(pred_levinephenoage_socmob_plot_black, pred_levinephenoage_socmob_plot_white, ncol = 2)
+```
+
+GrimAge
+
+```{r echo=FALSE}
+#White participants
+fig_t1_lm_white =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "3" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_white =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "2" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_white =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "1" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- DNAm subsample- White
+## mean(DNAm_subsample_white$age) = 71.13411
+## mean(DNAm_subsample_white$agesquared) = 5153.683
+## prop.table(table(DNAm_subsample_white$ragender)) = 0.5631104
+## age*gender = 40.05636
+## age^2*ragender = 2902.092
+
+fig_quartiles_white_df =
+  rbind(fig_t1_lm_white, fig_t2_lm_white, fig_t3_lm_white) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (71.13411*age) + (5153.683*agesquared) + (0.5631104*`ragender2.female`) + (40.05636*`age:ragender2.female`) + (2902.092*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+DNAm_subsample =
+  DNAm_subsample %>%
+  mutate(pctso_tertile = as.factor(pctso_tertile))
+
+pred_grimage_socmob_plot_white_forlegend =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = grimageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.168, intercept = -0.0881, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.169, intercept = 0.103, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.225, intercept = 0.0182, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (residualized-change percentile-rank") +
+  ylab("GrimAge Advancement (SD)") +
+  ggtitle("Predicted GrimAge Advancement by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_grimage_socmob_plot_white =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = grimageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.168, intercept = -0.0881, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.169, intercept = 0.103, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.225, intercept = 0.0182, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("GrimAge Advancement (SD)") +
+  ggtitle("Predicted GrimAge Advancement by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+
+# Black participants
+fig_t1_lm_black =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "3" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_black =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "2" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_black =
+  lm(grimageadv_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "1" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- DNAm subsample- Black
+## mean(DNAm_subsample_black$age) = 66.61586
+## mean(DNAm_subsample_black$agesquared) = 4511.39
+## prop.table(table(DNAm_subsample_black$ragender)) = 0.6562986
+## age*gender = 43.7199
+## age^2*ragender = 2960.819
+
+fig_quartiles_black_df =
+  rbind(fig_t1_lm_black, fig_t2_lm_black, fig_t3_lm_black) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (66.61586*age) + (4511.39*agesquared) + (0.6562986*`ragender2.female`) + (43.7199*`age:ragender2.female`) + (2960.819*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+pred_grimage_socmob_plot_black =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = rpct13_bc, y = grimageadv_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.233, intercept = 0.0534, color = "2"), size = 2) +
+  geom_abline(aes(slope = -0.187, intercept = 0.211, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.290, intercept = 0.112, color = "1"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("GrimAge Advancement (SD)") +
+  ggtitle("Predicted GrimAge Advancement by social mobility \namong Black participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+grid.arrange(pred_grimage_socmob_plot_black, pred_grimage_socmob_plot_white, ncol = 2)
+```
+
+
+DunedinPoAm Pace of Aging
+
+```{r echo=FALSE}
+#White participants
+fig_t1_lm_white_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "3" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_white_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "2" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_white_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "1" & raracem == "1.white/caucasian")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- DNAm subsample- White
+## mean(DNAm_subsample_white$age) = 71.13411
+## mean(DNAm_subsample_white$agesquared) = 5153.683
+## prop.table(table(DNAm_subsample_white$ragender)) = 0.5631104
+## age*gender = 40.05636
+## age^2*ragender = 2902.092
+
+fig_quartiles_white_df_poa =
+  rbind(fig_t1_lm_white_poa, fig_t2_lm_white_poa, fig_t3_lm_white_poa) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (71.13411*age) + (5153.683*agesquared) + (0.5631104*`ragender2.female`) + (40.05636*`age:ragender2.female`) + (2902.092*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+pred_poa_socmob_plot_white_forlegend =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = poa_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.105, intercept = 0.00280, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.131, intercept = -0.0638, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.189, intercept = 0.0109, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab("Social mobility (residualized-change percentile-rank") +
+  ylab("DunedinPoAm Pace of Aging (SD)") +
+  ggtitle("Predicted DunedinPoAm Pace of Aging by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+pred_poa_socmob_plot_white =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "1.white/caucasian"), aes(x = rpct13_bc, y = poa_sd, color = pctso_tertile), size = 0.75, alpha = 0.5) +
+  geom_abline(aes(slope = -0.105, intercept = 0.00280, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.131, intercept = -0.0638, color = "1"), size = 2) +
+  geom_abline(aes(slope = -0.189, intercept = 0.0109, color = "2"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("DunedinPoAm Pace of Aging (SD)") +
+  ggtitle("Predicted DunedinPoAm Pace of Aging by social mobility \namong white participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+
+# Black participants
+fig_t1_lm_black_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "3" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "1")
+fig_t2_lm_black_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "2" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "2")
+fig_t3_lm_black_poa =
+  lm(poa_sd ~ 
+       rpct13_bc + age + agesquared + ragender + age:ragender + agesquared:ragender, 
+        data = subset(DNAm_subsample, pctso_tertile == "1" & raracem == "2.black/african american")) %>%
+  broom::tidy() %>%
+  mutate(tertile = "3")
+
+# Average values- DNAm subsample- Black
+## mean(DNAm_subsample_black$age) = 66.61586
+## mean(DNAm_subsample_black$agesquared) = 4511.39
+## prop.table(table(DNAm_subsample_black$ragender)) = 0.6562986
+## age*gender = 43.7199
+## age^2*ragender = 2960.819
+
+fig_quartiles_black_df_poa =
+  rbind(fig_t1_lm_black_poa, fig_t2_lm_black_poa, fig_t3_lm_black_poa) %>%
+  select(term, estimate, tertile) %>%
+  pivot_wider(names_from = "term", values_from = "estimate") %>%
+  mutate(pred_slope = rpct13_bc,
+         pred_int = `(Intercept)` + (66.61586*age) + (4511.39*agesquared) + (0.6562986*`ragender2.female`) + (43.7199*`age:ragender2.female`) + (2960.819*`agesquared:ragender2.female`)) %>%
+  select(tertile, pred_int, pred_slope)
+
+pred_poa_socmob_plot_black =
+  ggplot() +
+  geom_point(data = subset(DNAm_subsample, raracem == "2.black/african american"), aes(x = rpct13_bc, y = poa_sd, color = pctso_tertile), size = 0.75, alpha = 0.6) +
+  geom_abline(aes(slope = -0.147, intercept = 0.216, color = "3"), size = 2) +
+  geom_abline(aes(slope = -0.233, intercept = 0.125, color = "2"), size = 2) +
+  geom_abline(aes(slope = -0.247, intercept = 0.0693, color = "1"), size = 2) +
+  theme_minimal() +
+  scale_colour_manual(values=c("1"="orchid4", "2"="goldenrod1", "3"="turquoise3"),
+                      guide = guide_legend(reverse=TRUE)) +
+  labs(color = "Tertile") +
+  xlim(-2,2) +
+  ylim(-2,2) +
+  xlab(NULL) +
+  ylab("DunedinPoAm Pace of Aging (SD)") +
+  ggtitle("Predicted DunedinPoAm Pace of Aging by social mobility \namong Black participants, by quartile of social origins") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+
+grid.arrange(pred_poa_socmob_plot_black, pred_poa_socmob_plot_white, ncol = 2)
+```
+
+
+# Checking interaction terms
+```{r echo=FALSE, include=FALSE}
+# Try with original samples
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = DNAm_subsample_men, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample, ragender == "1.male"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample_ED, ragender == "1.male"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+###############
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = DNAm_subsample_women, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample, ragender == "2.female"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample_ED, ragender == "2.female"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+##############
+
+lm.cluster(levinephenoageadv_sd ~ 
+         fameduc_num + 
+         age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender +
+         ragender:fameduc_num + ragender:raracem + ragender:hispanic
+         , data = DNAm_subsample, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num:ragender2.female")
+
+lm.cluster(levinephenoageadv_sd ~ 
+         fameduc_num + 
+         age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender +
+         ragender:fameduc_num
+         , data = DNAm_subsample_ED, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num:ragender2.female")
+```
+
+
+```{r echo=FALSE}
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = DNAm_subsample_men, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample, ragender == "1.male"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+###############
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = DNAm_subsample_women, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+lm.cluster(levinephenoageadv_sd ~ 
+       fameduc_num + 
+       age + agesquared + raracem + hispanic, data = subset(DNAm_subsample, ragender == "2.female"), cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num") 
+
+
+##############
+
+lm.cluster(levinephenoageadv_sd ~ 
+         fameduc_num + 
+         age + agesquared + ragender + raracem + hispanic + age:ragender + agesquared:ragender +
+         ragender:fameduc_num
+         , data = DNAm_subsample, cluster = "hhid") %>%
+  summary() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "term") %>%
+  janitor::clean_names() %>%
+  rename(std.error = std_error,
+          p.value = pr_t) %>%
+  filter(term == "fameduc_num:ragender2.female")
+
+```
+
+### Descriptives for Paragraph 1 of discussion
+```{r echo=FALSE}
+t.test(full_sample$rpct13_bc, BA_subsample$rpct13_bc)
+t.test(full_sample$rpct13_bc, DNAm_subsample$rpct13_bc)
+
+
+tfull = table(full_sample$raracem)
+tba = table(BA_subsample$raracem)
+tdnam = table(DNAm_subsample$raracem)
+
+library(data.table)
+
+chisq1 =
+  rbind(tfull, tba) %>%
+  t() %>%
+  as.data.frame() %>%
+  setDT()
+
+chisq.test(chisq1$tfull, chisq1$tba)
+
+chisq2 =
+  rbind(tfull, tdnam) %>%
+  t() %>%
+  as.data.frame() %>%
+  setDT()
+
+chisq.test(chisq2$tfull, chisq2$tdnam)
+```
+
+## Supplemental methods- bioage measure correlations
+```{r echo=FALSE}
+library(BioAge)
+
+agevar = c("levinephenoage_advance", "kdm_advance", "hd_log", "levinednam_advance", "grimage_advance", "poa")
+label = c("levinephenoage_advance" = "PhenoAge\nAdvance", 
+          "kdm_advance" = "KDM BA\nAdvance",
+          "hd_log" = "Homeostatic\nDysregulation",
+          "levinednam_advance" = "PhenoAge Clock\nResidual",
+          "grimage_advance" = "GrimAge Clock\nResidual",
+          "poa" = "DunedinPoAm\nPace of Aging")
+axis_type = c("levinephenoage_advance" = "float", 
+          "kdm_advance" = "float",
+          "hd_log" = "float",
+          "levinednam_advance" = "float",
+          "grimage_advance" = "float",
+          "poa" = "float")
+
+plot_baa(full_sample, agevar, label, axis_type)
+```
+
+
+## Supplemental analysis: effect of social origins controlling for attainment
+
